@@ -1,0 +1,11 @@
+package main imports [strconv] with builtin_check
+
+a : [int int] string
+a = {|x y|
+	tmp = strconv_atoi y
+	n = if (a < b) { 1 } else { 2 }
+	[(x + tmp) (n + tmp)]
+	for i in [a b c] {
+		
+	}
+}
