@@ -20,21 +20,13 @@ type Element interface {
 	element()
 }
 
-func GroupsString(g []Group, prefix string) string {
-	newPrefix := prefix + "\t"
-	var b strings.Builder
-	b.WriteString("{\n")
+func PrintGroups(g []Group) {
 	for _, gg := range g {
-		b.WriteString(newPrefix)
-		b.WriteString(ElementString(gg, newPrefix))
-		b.WriteString("\n")
+		fmt.Println(elementString(gg, ""))
 	}
-	b.WriteString(prefix)
-	b.WriteString("}")
-	return b.String()
 }
 
-func ElementString(e Element, prefix string) string {
+func elementString(e Element, prefix string) string {
 	switch v := e.(type) {
 	case Atom:
 		return string(v)
@@ -46,7 +38,7 @@ func ElementString(e Element, prefix string) string {
 		var b strings.Builder
 		b.WriteString("(")
 		for i, e := range v {
-			b.WriteString(ElementString(e, prefix))
+			b.WriteString(elementString(e, prefix))
 			if i < len(v)-1 {
 				b.WriteString(" ")
 			}
@@ -57,7 +49,7 @@ func ElementString(e Element, prefix string) string {
 		var b strings.Builder
 		b.WriteString("[")
 		for i, e := range v {
-			b.WriteString(ElementString(e, prefix))
+			b.WriteString(elementString(e, prefix))
 			if i < len(v)-1 {
 				b.WriteString(" ")
 			}
@@ -66,17 +58,38 @@ func ElementString(e Element, prefix string) string {
 		return b.String()
 	case Block:
 		var b strings.Builder
-		b.WriteString("|")
-		b.WriteString(ElementString(v.Definition, prefix))
-		b.WriteString("| ")
-		b.WriteString(GroupsString(v.Body, prefix))
+		b.WriteString("{")
+
+		if len(v.Definition) > 0 {
+			b.WriteString("|")
+			b.WriteString(elementString(v.Definition, prefix))
+			b.WriteString("|")
+		}
+
+		if len(v.Body) > 1 {
+			b.WriteString("\n")
+		}
+		for _, g := range v.Body {
+			if len(v.Body) > 1 {
+				b.WriteString(prefix + "\t")
+			}
+			b.WriteString(elementString(g, prefix+"\t"))
+			if len(v.Body) > 1 {
+				b.WriteString("\n")
+			}
+		}
+		if len(v.Body) > 1 {
+			b.WriteString(prefix)
+		}
+
+		b.WriteString("}")
 		return b.String()
 	case Operator:
 		return fmt.Sprintf(
 			"%s %s %s",
-			ElementString(v.LHS, prefix),
+			elementString(v.LHS, prefix),
 			v.Symbol,
-			ElementString(v.RHS, prefix),
+			elementString(v.RHS, prefix),
 		)
 	default:
 		return "<unknown>"
@@ -381,6 +394,19 @@ func Parse(lexer *Lexer) ([]Group, error) {
 	groups := make([]Group, 0)
 	p := parser{lexer}
 	for {
+		t, err := p.l.Next()
+		if err != nil {
+			if err == io.EOF {
+				return groups, nil
+			}
+			return groups, err
+		}
+		if _, ok := t.(EndOfLine); ok {
+			continue
+		} else {
+			p.l.Unread()
+		}
+
 		g, err := p.group(false, false)
 		if err != nil {
 			if err == io.EOF {
@@ -418,7 +444,18 @@ func (p *parser) group(explicitBracket bool, endOnPipe bool) (Group, error) {
 			}
 
 			rhs, err := p.group(explicitBracket, false)
-			return Group{Operator{Symbol: v, LHS: g, RHS: rhs}}, err
+			op := Operator{Symbol: v, LHS: g, RHS: rhs}
+			g = Group{op}
+			if err != nil {
+				return g, err
+			}
+			if len(op.LHS) == 0 {
+				return g, fmt.Errorf("operator %s with 0 arguments on the left", op.Symbol)
+			}
+			if len(op.RHS) == 0 {
+				return g, fmt.Errorf("operator %s with 0 arguments on the right", op.Symbol)
+			}
+			return g, nil
 		case ClosedBracket:
 			if !explicitBracket {
 				return g, errors.New("unexpected closed bracket")
@@ -431,7 +468,7 @@ func (p *parser) group(explicitBracket bool, endOnPipe bool) (Group, error) {
 				return g, err
 			}
 		case EndOfLine:
-			if !explicitBracket && !endOnPipe && len(g) > 0 {
+			if !explicitBracket && !endOnPipe {
 				return g, nil
 			}
 		case Atom, String, *Number:
@@ -540,6 +577,7 @@ func (p *parser) block() (Block, error) {
 		}
 
 		switch t.(type) {
+		case EndOfLine:
 		case ClosedCurly:
 			return b, nil
 		case ClosedBracket:
@@ -566,25 +604,9 @@ func main() {
 	defer f.Close()
 
 	groups, err := Parse(NewLexer(bufio.NewReader(f)))
-	fmt.Println(GroupsString(groups, ""))
+	PrintGroups(groups)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-
-	// for {
-	// 	t, err := l.Next()
-	// 	if err != nil {
-	// 		fmt.Println()
-	// 		if err != io.EOF {
-	// 			fmt.Fprintln(os.Stderr, err)
-	// 		}
-	// 		return
-	// 	}
-	// 	if _, ok := t.(EndOfLine); ok {
-	// 		fmt.Println()
-	// 	} else {
-	// 		fmt.Printf("%s ", t)
-	// 	}
-	// }
 }
