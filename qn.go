@@ -7,16 +7,80 @@ import (
 	"io"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
 	"unicode"
 )
+
+type Token interface {
+	token()
+}
 
 type Element interface {
 	element()
 }
 
-type Token interface {
-	token()
+func GroupsString(g []Group, prefix string) string {
+	newPrefix := prefix + "\t"
+	var b strings.Builder
+	b.WriteString("{\n")
+	for _, gg := range g {
+		b.WriteString(newPrefix)
+		b.WriteString(ElementString(gg, newPrefix))
+		b.WriteString("\n")
+	}
+	b.WriteString(prefix)
+	b.WriteString("}")
+	return b.String()
+}
+
+func ElementString(e Element, prefix string) string {
+	switch v := e.(type) {
+	case Atom:
+		return string(v)
+	case String:
+		return strconv.Quote(string(v))
+	case *Number:
+		return v.String()
+	case Group:
+		var b strings.Builder
+		b.WriteString("(")
+		for i, e := range v {
+			b.WriteString(ElementString(e, prefix))
+			if i < len(v)-1 {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString(")")
+		return b.String()
+	case List:
+		var b strings.Builder
+		b.WriteString("[")
+		for i, e := range v {
+			b.WriteString(ElementString(e, prefix))
+			if i < len(v)-1 {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString("]")
+		return b.String()
+	case Block:
+		var b strings.Builder
+		b.WriteString("|")
+		b.WriteString(ElementString(v.Definition, prefix))
+		b.WriteString("| ")
+		b.WriteString(GroupsString(v.Body, prefix))
+		return b.String()
+	case Operator:
+		return fmt.Sprintf(
+			"%s %s %s",
+			ElementString(v.LHS, prefix),
+			v.Symbol,
+			ElementString(v.RHS, prefix),
+		)
+	default:
+		return "<unknown>"
+	}
 }
 
 type Atom string
@@ -38,8 +102,7 @@ func (_ String) token()   {}
 
 type Symbol string
 
-func (_ Symbol) element() {}
-func (_ Symbol) token()   {}
+func (_ Symbol) token() {}
 
 type OpenBracket struct{}
 
@@ -164,7 +227,6 @@ func (l *Lexer) Unread() {
 func (l *Lexer) Next() (Token, error) {
 	if l.useLastToken {
 		t := l.lastToken
-		l.lastToken = nil
 		l.useLastToken = false
 		return t, nil
 	}
@@ -320,13 +382,13 @@ func Parse(lexer *Lexer) ([]Group, error) {
 	p := parser{lexer}
 	for {
 		g, err := p.group(false, false)
-		groups = append(groups, g)
 		if err != nil {
 			if err == io.EOF {
 				return groups, nil
 			}
-			return groups, fmt.Errorf("%w, read until line %d", err, p.l.r.line)
+			return append(groups, g), fmt.Errorf("%w, read until line %d", err, p.l.r.line)
 		}
+		groups = append(groups, g)
 	}
 }
 
@@ -344,7 +406,7 @@ func (p *parser) group(explicitBracket bool, endOnPipe bool) (Group, error) {
 				if explicitBracket {
 					return g, errors.New("missing closed bracket")
 				}
-				return g, nil
+				return g, io.EOF
 			}
 			return g, err
 		}
@@ -355,7 +417,7 @@ func (p *parser) group(explicitBracket bool, endOnPipe bool) (Group, error) {
 				return g, nil
 			}
 
-			rhs, err := p.group(false, false)
+			rhs, err := p.group(explicitBracket, false)
 			return Group{Operator{Symbol: v, LHS: g, RHS: rhs}}, err
 		case ClosedBracket:
 			if !explicitBracket {
@@ -504,7 +566,7 @@ func main() {
 	defer f.Close()
 
 	groups, err := Parse(NewLexer(bufio.NewReader(f)))
-	fmt.Printf("%#v\n", groups)
+	fmt.Println(GroupsString(groups, ""))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
