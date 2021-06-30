@@ -12,80 +12,12 @@ import (
 	"unicode"
 )
 
-type Token interface {
-	token()
-}
-
 type Element interface {
 	element()
 }
 
-func (b Block) String() string {
-	b.recString("")
-}
-
-func (b Block) recString(prefix string) string {
-	newPrefix := prefix + "\t"
-	var out strings.Builder
-	out.WriteString("{")
-
-	if len(b) > 1 {
-		out.WriteString("\n")
-	}
-	for _, g := range b {
-		if len(b) > 1 {
-			out.WriteString(newPrefix)
-		}
-		out.WriteString(elementString(g, newPrefix))
-		if len(b) > 1 {
-			out.WriteString("\n")
-		}
-	}
-	if len(b) > 1 {
-		out.WriteString(prefix)
-	}
-
-	b.WriteString("}")
-	return b.String()
-}
-
-func elementString(e Element, prefix string) string {
-	switch v := e.(type) {
-	case Atom:
-		return string(v)
-	case String:
-		return strconv.Quote(string(v))
-	case Symbol:
-		return string(v)
-	case *Number:
-		return v.String()
-	case Group:
-		var b strings.Builder
-		b.WriteString("(")
-		for i, e := range v {
-			b.WriteString(elementString(e, prefix))
-			if i < len(v)-1 {
-				b.WriteString(" ")
-			}
-		}
-		b.WriteString(")")
-		return b.String()
-	case List:
-		var b strings.Builder
-		b.WriteString("[")
-		for i, e := range v {
-			b.WriteString(elementString(e, prefix))
-			if i < len(v)-1 {
-				b.WriteString(" ")
-			}
-		}
-		b.WriteString("]")
-		return b.String()
-	case Block:
-		return v.recString(prefix)
-	default:
-		return "<unknown>"
-	}
+type Token interface {
+	token()
 }
 
 type Atom string
@@ -107,7 +39,8 @@ func (_ String) token()   {}
 
 type Symbol string
 
-func (_ Symbol) token() {}
+func (_ Symbol) token()   {}
+func (_ Symbol) element() {}
 
 type OpenBracket struct{}
 
@@ -167,13 +100,73 @@ type Block []Group
 
 func (_ Block) element() {}
 
-type Operator struct {
-	LHS    Group
-	Symbol Symbol
-	RHS    Group
+func (b Block) String() string {
+	return b.recString("")
 }
 
-func (_ Operator) element() {}
+func (b Block) recString(prefix string) string {
+	newPrefix := prefix + "\t"
+	var out strings.Builder
+	out.WriteString("{")
+
+	if len(b) > 1 {
+		out.WriteString("\n")
+	}
+	for _, g := range b {
+		if len(b) > 1 {
+			out.WriteString(newPrefix)
+		}
+		out.WriteString(elementString(g, newPrefix))
+		if len(b) > 1 {
+			out.WriteString("\n")
+		}
+	}
+	if len(b) > 1 {
+		out.WriteString(prefix)
+	}
+
+	out.WriteString("}")
+	return out.String()
+}
+
+func elementString(e Element, prefix string) string {
+	switch v := e.(type) {
+	case Atom:
+		return string(v)
+	case String:
+		return strconv.Quote(string(v))
+	case Symbol:
+		return string(v)
+	case *Number:
+		return v.String()
+	case Group:
+		var b strings.Builder
+		b.WriteString("(")
+		for i, e := range v {
+			b.WriteString(elementString(e, prefix))
+			if i < len(v)-1 {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString(")")
+		return b.String()
+	case List:
+		var b strings.Builder
+		b.WriteString("[")
+		for i, e := range v {
+			b.WriteString(elementString(e, prefix))
+			if i < len(v)-1 {
+				b.WriteString(" ")
+			}
+		}
+		b.WriteString("]")
+		return b.String()
+	case Block:
+		return v.recString(prefix)
+	default:
+		return "<unknown>"
+	}
+}
 
 func must(err error) {
 	if err != nil {
@@ -393,83 +386,79 @@ func isSymbol(ch rune) bool {
 }
 
 func Parse(lexer *Lexer) (Block, error) {
-	groups := make([]Group, 0)
-	b, err := parser{lexer}.block(false)
+	p := &parser{lexer}
+	b, err := p.block(false)
 	if err == io.EOF {
 		return b, nil
 	}
-	return b, fmt.Errorf("an error occured after reading to line %d: %w, ", p.l.r.line, err)
+	return b, fmt.Errorf("an error occured after reading to line %d: %w", p.l.r.line, err)
 }
 
 type parser struct {
 	l *Lexer
 }
 
-func (p *parser) group(explicitBracket bool, breakOnSymbol bool) (_ Group, endedOnSymbol bool, _ error) {
+func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) {
 	var g Group
 
 	for {
 		t, err := p.l.Next()
 		if err != nil {
 			if err == io.EOF && explicitBracket {
-				return g, false, errors.New("missing closed bracket")
+				return g, errors.New("missing closed bracket")
 			}
 			return g, err
 		}
 
 		switch v := t.(type) {
 		case Symbol:
-			if breakOnSymbol {
-				return g, true, nil
+			if errorOnSymbol {
+				return g, fmt.Errorf("more than 1 symbol (%s) in group, use extra brackets", v)
 			}
 
-			rhs, endedOnSymbol, err := p.group(explicitBracket, true)
+			rhs, err := p.group(explicitBracket, true)
 			g = Group{g, v, rhs}
 			if err != nil {
 				return g, err
 			}
-			if endedOnSymbol {
-
-			}
-
 			return g, nil
 		case ClosedBracket:
 			if !explicitBracket {
-				return g, false, errors.New("unexpected closed bracket")
+				return g, errors.New("unexpected closed bracket")
 			}
-			return g, false, nil
+			return g, nil
 		case OpenBracket:
-			gg, _, err := p.group(true, false)
+			gg, err := p.group(true, false)
 			g = append(g, gg)
 			if err != nil {
-				return g, false, err
+				return g, err
 			}
 		case EndOfLine:
-			if !explicitBracket && !endOnPipe {
-				return g, false, nil
+			if !explicitBracket {
+				return g, nil
 			}
 		case Atom, String, *Number:
 			g = append(g, v.(Element))
 		case OpenCurly:
-			b, err := p.block()
+			b, err := p.block(true)
 			g = append(g, b)
 			if err != nil {
-				return g, false, err
+				return g, err
 			}
 		case OpenSquare:
 			l, err := p.list()
 			g = append(g, l)
 			if err != nil {
-				return g, false, err
+				return g, err
 			}
 		case ClosedCurly:
-			if explicitBracket || endOnPipe {
-				return g, false, errors.New("unexpected closed curly")
+			if explicitBracket {
+				return g, errors.New("unexpected closed curly")
 			}
 			p.l.Unread()
 			return g, nil
 		case ClosedSquare:
-			return g, false, errors.New("unexpected closed square")
+			return g, errors.New("unexpected closed square")
 		default:
 			panic("impl")
 		}
@@ -494,7 +483,7 @@ func (p *parser) list() (List, error) {
 		case ClosedBracket:
 			return l, errors.New("unexpected closed bracket")
 		case OpenBracket:
-			g, _, err := p.group(true, false)
+			g, err := p.group(true, false)
 			l = append(l, g)
 			if err != nil {
 				return l, err
@@ -503,7 +492,7 @@ func (p *parser) list() (List, error) {
 		case Atom, String, *Number:
 			l = append(l, v.(Element))
 		case OpenCurly:
-			b, err := p.block()
+			b, err := p.block(true)
 			l = append(l, b)
 			if err != nil {
 				return l, err
@@ -539,7 +528,7 @@ func (p *parser) block(explicitCurly bool) (Block, error) {
 		switch t.(type) {
 		case EndOfLine:
 		case ClosedCurly:
-			if !explicitBracket {
+			if !explicitCurly {
 				return b, errors.New("unexpected closed curly")
 			}
 			return b, nil
@@ -549,8 +538,8 @@ func (p *parser) block(explicitCurly bool) (Block, error) {
 			return b, errors.New("unexpected closed square")
 		default:
 			p.l.Unread()
-			g, _, err := p.group(false, false)
-			b.Body = append(b.Body, g)
+			g, err := p.group(false, false)
+			b = append(b, g)
 			if err != nil {
 				return b, err
 			}
@@ -582,8 +571,8 @@ func main() {
 	}
 	fmt.Println()
 
-	groups, err := Parse(NewLexer(bytes.NewReader(b)))
-	PrintGroups(groups)
+	block, err := Parse(NewLexer(bytes.NewReader(b)))
+	fmt.Println(block.String())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
