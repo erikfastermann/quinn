@@ -23,5 +23,21 @@ a = b
 (a b) = c
 
 
-# when parsing blocks, all unknown vars are marked
-# 
+# when parsing blocks, all unknown vars are marked and attached to the block definition
+# calling a block places arguments internally
+# use an operator defintion and builtins to replace 
+# evaluating an undefined var panics
+
+# a block is evaluated group by group
+# the last generated value in a block is returned automatically
+# a builtin can be used to return early
+# every earlier expression that doesn't evaluate to (), panics
+# an empty block evaluates to ()
+
+# the following groups are possible:
+#	stored as value:
+#		() (String) (Number)
+#	stored as name (previous names are also stored) and underlying value (if any):
+#		(Atom)
+#	evaluated (arguments treated like this as well) and stored as value:
+#		(Atom ...) (Group Symbol Group)
