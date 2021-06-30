@@ -1,1 +1,9 @@
-if (a < b)
+a :: [[[x int] [y int]] string] {
+}
+
+a = b
+(a b) = c
+
+
+# when parsing blocks, all unknown vars are 
+# 

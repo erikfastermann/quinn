@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -348,7 +348,7 @@ func (l *Lexer) next() (Token, error) {
 				panic("impl")
 			}
 			return &Number{i}, nil
-		} else if unicode.IsLetter(ch) || unicode.IsNumber(ch) || ch == '_' {
+		} else if isAtomChar(ch) {
 			var atom strings.Builder
 			atom.WriteRune(ch)
 			for {
@@ -359,14 +359,14 @@ func (l *Lexer) next() (Token, error) {
 					}
 					return nil, err
 				}
-				if !unicode.IsLetter(ch) && !unicode.IsNumber(ch) && ch != '_' {
+				if !isAtomChar(ch) {
 					must(l.r.UnreadRune())
 					break
 				}
 				atom.WriteRune(ch)
 			}
 			return Atom(atom.String()), nil
-		} else if !unicode.IsControl(ch) {
+		} else if isSymbol(ch) {
 			var symbol strings.Builder
 			symbol.WriteRune(ch)
 			for {
@@ -377,7 +377,7 @@ func (l *Lexer) next() (Token, error) {
 					}
 					return nil, err
 				}
-				if !unicode.IsSymbol(ch) {
+				if !isSymbol(ch) {
 					must(l.r.UnreadRune())
 					break
 				}
@@ -387,6 +387,19 @@ func (l *Lexer) next() (Token, error) {
 		} else {
 			return nil, fmt.Errorf("unknown character %q", ch)
 		}
+	}
+}
+
+func isAtomChar(ch rune) bool {
+	return unicode.IsLetter(ch) || unicode.IsNumber(ch) || ch == '_'
+}
+
+func isSymbol(ch rune) bool {
+	switch ch {
+	case '"', '(', ')', '{', '}', '[', ']', '_':
+		return false
+	default:
+		return unicode.IsSymbol(ch) || unicode.IsPunct(ch)
 	}
 }
 
@@ -596,14 +609,30 @@ func (p *parser) block() (Block, error) {
 }
 
 func main() {
-	f, err := os.Open(os.Args[1])
+	b, err := os.ReadFile(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
-	defer f.Close()
 
-	groups, err := Parse(NewLexer(bufio.NewReader(f)))
+	l := NewLexer(bytes.NewReader(b))
+	for {
+		t, err := l.Next()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			fmt.Fprintln(os.Stderr, err)
+		}
+		if _, ok := t.(EndOfLine); ok {
+			fmt.Println()
+		} else {
+			fmt.Printf("%s ", t)
+		}
+	}
+	fmt.Println()
+
+	groups, err := Parse(NewLexer(bytes.NewReader(b)))
 	PrintGroups(groups)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
