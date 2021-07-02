@@ -3,23 +3,29 @@ package run
 import (
 	"fmt"
 	"math/big"
+	"strconv"
+	"strings"
 
 	"github.com/erikfastermann/quinn/parser"
 )
 
 // TODO:
-//	better printing for vals
 //	define function with args
 
 const internal = "internal error"
 
 type Value interface {
 	value()
+	String() string
 }
 
 type Unit struct{}
 
 func (Unit) value() {}
+
+func (Unit) String() string {
+	return "()"
+}
 
 var unit Value = Unit{}
 
@@ -27,13 +33,28 @@ type Bool bool
 
 func (Bool) value() {}
 
+func (b Bool) String() string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 type String string
 
 func (String) value() {}
 
+func (s String) String() string {
+	return strconv.Quote(string(s))
+}
+
 type Atom string
 
 func (Atom) value() {}
+
+func (a Atom) String() string {
+	return string(a)
+}
 
 // TODO: could use unsafe to cast *parser.Number to *Number
 
@@ -43,11 +64,29 @@ type Number struct {
 
 func (*Number) value() {}
 
+func (n *Number) String() string {
+	return n.RatString()
+}
+
 type List struct {
+	// TODO: use persistent array
 	data []Value
 }
 
 func (List) value() {}
+
+func (l List) String() string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i, v := range l.data {
+		b.WriteString(v.String())
+		if i < len(l.data)-1 {
+			b.WriteString(" ")
+		}
+	}
+	b.WriteString("]")
+	return b.String()
+}
 
 type Block struct {
 	fromGo func(*environment, []Value) (Value, error)
@@ -58,12 +97,20 @@ type Block struct {
 
 func (*Block) value() {}
 
+func (*Block) String() string {
+	return "<block>"
+}
+
 func (b *Block) run(local *environment, args []Value) (Value, error) {
-	if b.fromGo != nil {
-		return b.fromGo(local, args)
+	env := local
+	if b.env != nil {
+		env = b.env.merge()
 	}
 
-	env := b.env.merge()
+	if b.fromGo != nil {
+		return b.fromGo(env, args)
+	}
+
 	for i, group := range b.code {
 		v, err := evalGroup(env, group)
 		if err != nil {
@@ -230,7 +277,15 @@ func (e *environment) merge() *environment {
 	return &environment{outer: outer}
 }
 
-var builtins = []struct {
+var builtinOther = []struct {
+	name  string
+	value Value
+}{
+	{"false", Bool(false)},
+	{"true", Bool(true)},
+}
+
+var builtinBlocks = []struct {
 	name string
 	fn   func(*environment, []Value) (Value, error)
 }{
@@ -267,7 +322,7 @@ var builtins = []struct {
 	}},
 	{"println", func(_ *environment, args []Value) (Value, error) {
 		for i, v := range args {
-			_, err := fmt.Print(v)
+			_, err := fmt.Print(v.String())
 			if err != nil {
 				return nil, err
 			}
@@ -280,7 +335,6 @@ var builtins = []struct {
 	}},
 }
 
-// when adding blocks, all unknown vars are marked and attached to the block definition.
 // calling a block places arguments internally,
 // use an operator defintion and builtins to replace.
 // evaluating an undefined var panics.
@@ -300,9 +354,14 @@ var builtins = []struct {
 //		(Atom ...)
 func Run(block parser.Block) error {
 	b := Block{env: new(environment), code: block}
-	for _, builtin := range builtins {
+	for _, builtin := range builtinBlocks {
 		v := &Block{fromGo: builtin.fn}
 		if ok := b.env.put(builtin.name, v); !ok {
+			panic(internal)
+		}
+	}
+	for _, builtin := range builtinOther {
+		if ok := b.env.put(builtin.name, builtin.value); !ok {
 			panic(internal)
 		}
 	}
