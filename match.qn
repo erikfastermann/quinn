@@ -1,0 +1,26 @@
+# match x [[some y] { y } [none] { error "error" }]
+match = ([x exprs] -> {
+	i = mut 0
+	each case exprs {
+		prev = load i
+		i <- (prev + 1)
+		if ((prev %% 2) == 0) {
+			if ((case @ 0) x) {
+				if ((len case) == 1) {
+					((exprs @ (prev+1)) ())
+				} {
+					([(case@1)] -> (exprs @ (prev+1))) x
+				}}{}}{}}})
+
+some = ([x] -> {
+	if x { true } { false }
+})
+
+none = ([x] -> {
+	if x { false } { true }
+})
+
+println (match 1 [
+	[some x] { 42 }
+	[none] { 456 }
+])

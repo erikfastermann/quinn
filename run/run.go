@@ -11,10 +11,11 @@ import (
 )
 
 // TODO:
+//	check if block is called with more args and doesn't accept them
 //	loops / conditionals
+//	recursion
 //	early returns
 //	Value.Type
-//	use %s for value errors
 //	rename xxxValue -> xxxV
 //	env.{get,put} should take Atom
 //	Block not with ptr recv?
@@ -25,12 +26,19 @@ const internal = "internal error"
 
 type Value interface {
 	value()
+
+	Eq(Value) bool
 	String() string
 }
 
 type Unit struct{}
 
 func (Unit) value() {}
+
+func (Unit) Eq(v Value) bool {
+	_, isUnit := v.(Unit)
+	return isUnit
+}
 
 func (Unit) String() string {
 	return "()"
@@ -41,6 +49,11 @@ var unit Value = Unit{}
 type Bool bool
 
 func (Bool) value() {}
+
+func (b Bool) Eq(v Value) bool {
+	b2, ok := v.(Bool)
+	return ok && b == b2
+}
 
 func (b Bool) String() string {
 	if b {
@@ -53,6 +66,11 @@ type String string
 
 func (String) value() {}
 
+func (s String) Eq(v Value) bool {
+	s2, ok := v.(String)
+	return ok && s == s2
+}
+
 func (s String) String() string {
 	return strconv.Quote(string(s))
 }
@@ -60,6 +78,11 @@ func (s String) String() string {
 type Atom string
 
 func (Atom) value() {}
+
+func (a Atom) Eq(v Value) bool {
+	a2, ok := v.(Atom)
+	return ok && a == a2
+}
 
 func (a Atom) String() string {
 	return string(a)
@@ -73,6 +96,11 @@ type Number struct {
 
 func (*Number) value() {}
 
+func (n *Number) Eq(v Value) bool {
+	n2, ok := v.(*Number)
+	return ok && n.Cmp(&n2.Rat) == 0
+}
+
 func (n *Number) String() string {
 	return n.RatString()
 }
@@ -83,6 +111,19 @@ type List struct {
 }
 
 func (List) value() {}
+
+func (l List) Eq(v Value) bool {
+	l2, ok := v.(List)
+	if !ok || len(l.data) != len(l2.data) {
+		return false
+	}
+	for i := range l.data {
+		if !l.data[i].Eq(l2.data[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 func (l List) String() string {
 	var b strings.Builder
@@ -97,6 +138,20 @@ func (l List) String() string {
 	return b.String()
 }
 
+type Mut struct {
+	v Value
+}
+
+func (*Mut) value() {}
+
+func (*Mut) Eq(_ Value) bool {
+	return false
+}
+
+func (m *Mut) String() string {
+	return fmt.Sprintf("(mut %s)", m.v)
+}
+
 type Block struct {
 	env    *environment
 	fromGo func(*environment, []Value) (Value, error)
@@ -104,6 +159,10 @@ type Block struct {
 }
 
 func (*Block) value() {}
+
+func (*Block) Eq(_ Value) bool {
+	return false
+}
 
 func (*Block) String() string {
 	return "<block>"
@@ -129,7 +188,7 @@ func (b *Block) run(local *environment, args []Value) (Value, error) {
 			return v, nil
 		} else {
 			if _, ok := v.(Unit); !ok {
-				return v, fmt.Errorf("non unit value %#v in other than last group of block", v)
+				return v, fmt.Errorf("non unit value %s in other than last group of block", v)
 			}
 		}
 	}
@@ -202,7 +261,7 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			block, ok := blockValue.(*Block)
 			if !ok {
 				return blockValue, fmt.Errorf(
-					"can't call value %#v, not a block",
+					"can't call value %s, not a block",
 					blockValue,
 				)
 			}
@@ -215,7 +274,7 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			block, ok := nameValue.(*Block)
 			if !ok {
 				return nameValue, fmt.Errorf(
-					"name %s is not a block, but a %#v value instead",
+					"name %s is not a block, but a %s value instead",
 					first,
 					nameValue,
 				)
@@ -258,7 +317,7 @@ func evalElement(env *environment, element parser.Element) (Value, error) {
 		block, ok := symbolValue.(*Block)
 		if !ok {
 			return symbolValue, fmt.Errorf(
-				"operator %s is not a block, but a %#v value instead",
+				"operator %s is not a block, but a %s value instead",
 				v.Symbol,
 				symbolValue,
 			)
@@ -336,18 +395,59 @@ var builtinBlocks = []struct {
 	name string
 	fn   func(*environment, []Value) (Value, error)
 }{
+	{"mut", func(env *environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("mut: expected one argument, got %d", len(args))
+		}
+		return &Mut{args[0]}, nil
+	}},
+	{"load", func(env *environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("load: expected one argument, got %d", len(args))
+		}
+		targetV := args[0]
+		target, ok := targetV.(*Mut)
+		if !ok {
+			return targetV, fmt.Errorf("can't load from non mut %s", targetV)
+		}
+		return target.v, nil
+	}},
+	{"<-", func(env *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+		targetV, v := args[0], args[1]
+		target, ok := targetV.(*Mut)
+		if !ok {
+			return targetV, fmt.Errorf("can't store into non mut %s", targetV)
+		}
+		target.v = v
+		return unit, nil
+	}},
 	{"=", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			panic(internal) // op can only be called with 2 args
 		}
 		assignee, ok := args[0].(Atom)
 		if !ok {
-			return args[0], fmt.Errorf("couldn't assign to name, %#v is not an atom", args[0])
+			return args[0], fmt.Errorf("couldn't assign to name, %s is not an atom", args[0])
 		}
 		if ok := env.put(string(assignee), args[1]); !ok {
 			return assignee, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
 		return unit, nil
+	}},
+	{"==", func(env *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+		return Bool(args[0].Eq(args[1])), nil
+	}},
+	{"!=", func(env *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+		return Bool(!args[0].Eq(args[1])), nil
 	}},
 	{"+", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
@@ -357,15 +457,51 @@ var builtinBlocks = []struct {
 		xValue, yValue := args[0], args[1]
 		x, ok := xValue.(*Number)
 		if !ok {
-			return xValue, fmt.Errorf("can't add, %#v is not a number", xValue)
+			return xValue, fmt.Errorf("can't add, %s is not a number", xValue)
 		}
 		y, ok := yValue.(*Number)
 		if !ok {
-			return yValue, fmt.Errorf("can't add, %#v is not a number", yValue)
+			return yValue, fmt.Errorf("can't add, %s is not a number", yValue)
 		}
 		var z big.Rat
 		z.Add(&x.Rat, &y.Rat)
 		return &Number{z}, nil
+	}},
+	{"%%", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+
+		xValue, yValue := args[0], args[1]
+		x, ok := xValue.(*Number)
+		if !ok {
+			return xValue, fmt.Errorf("modulo: %s is not a number", xValue)
+		}
+		y, ok := yValue.(*Number)
+		if !ok {
+			return yValue, fmt.Errorf("modulo: %s is not a number", yValue)
+		}
+		if !x.IsInt() {
+			return xValue, fmt.Errorf(
+				"modulo: %s is not an integer",
+				x.RatString(),
+			)
+		}
+		if !y.IsInt() {
+			return yValue, fmt.Errorf(
+				"modulo: %s is not an integer",
+				y.RatString(),
+			)
+		}
+		if y.Num().IsInt64() && y.Num().Int64() == 0 {
+			return yValue, errors.New("modulo: denominator is zero")
+		}
+
+		var z big.Int
+		z.Rem(x.Num(), y.Num())
+		var r big.Rat
+		r.SetInt(&z)
+		return &Number{r}, nil
 	}},
 	{"->", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
@@ -376,7 +512,7 @@ var builtinBlocks = []struct {
 		def, ok := defValue.(List)
 		if !ok {
 			return defValue, fmt.Errorf(
-				"block defintion has to be a list, got %#v",
+				"block defintion has to be a list, got %s",
 				defValue,
 			)
 		}
@@ -384,7 +520,7 @@ var builtinBlocks = []struct {
 		for i, v := range def.data {
 			atom, ok := v.(Atom)
 			if !ok {
-				return v, fmt.Errorf("argument has to be atom, got %#v", v)
+				return v, fmt.Errorf("argument has to be atom, got %s", v)
 			}
 			atoms[i] = atom
 		}
@@ -392,7 +528,7 @@ var builtinBlocks = []struct {
 		block, ok := blockV.(*Block)
 		if !ok {
 			return blockV, fmt.Errorf(
-				"expected block, got %#v",
+				"expected block, got %s",
 				blockV,
 			)
 		}
@@ -444,10 +580,10 @@ var builtinBlocks = []struct {
 			return args[2], fmt.Errorf("if: third argument must be a block, got %s", args[2])
 		}
 		_, isUnit := args[0].(Unit)
-		if b, _ := args[0].(Bool); bool(b) || !isUnit {
-			return tBlock.run(nil, nil)
+		if b, isBool := args[0].(Bool); (isBool && !bool(b)) || isUnit {
+			return fBlock.run(nil, nil)
 		}
-		return fBlock.run(nil, nil)
+		return tBlock.run(nil, nil)
 	}},
 	{"each", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 3 {
@@ -491,15 +627,51 @@ var builtinBlocks = []struct {
 			if err != nil {
 				return v, err
 			}
+
 			if _, isUnit := v.(Unit); !isUnit {
-				return v, fmt.Errorf(
-					"each: block returned %s instead of unit",
-					v,
-				)
+				return v, nil
 			}
 		}
 
 		return unit, nil
+	}},
+	{"@", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+		listV, numV := args[0], args[1]
+		list, ok := listV.(List)
+		if !ok {
+			return listV, fmt.Errorf("at: expected list, got %s", listV)
+		}
+		num, ok := numV.(*Number)
+		var zero big.Int
+		if !ok || !num.IsInt() || num.Num().Cmp(&zero) < 0 {
+			return numV, fmt.Errorf("at: %s is not an unsigned integer", numV)
+		}
+		idx64 := num.Num().Int64()
+		idx := int(idx64)
+		if !num.Num().IsInt64() || int64(idx) != idx64 || idx >= len(list.data) {
+			return numV, fmt.Errorf(
+				"at: index out of range (%s with length %d)",
+				num,
+				len(list.data),
+			)
+		}
+		return list.data[idx], nil
+	}},
+	{"len", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("len: expected 1 argument, got %d", len(args))
+		}
+		lV := args[0]
+		l, ok := lV.(List)
+		if !ok {
+			return lV, fmt.Errorf("len: expected list, got %s", lV)
+		}
+		var r big.Rat
+		r.SetInt64(int64(len(l.data)))
+		return &Number{r}, nil
 	}},
 	{"println", func(_ *environment, args []Value) (Value, error) {
 		for i, v := range args {

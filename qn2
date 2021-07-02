@@ -1,6 +1,0 @@
-fn = { 2 }
-a = (16 + (fn ()))
-b = {
-	{ 24+a }
-}
-println ((b ()) ()) fn true ["a" 2 atom]
