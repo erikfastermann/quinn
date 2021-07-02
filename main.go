@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"fmt"
 	"os"
 
@@ -10,11 +10,12 @@ import (
 )
 
 func main() {
-	b, err := os.ReadFile(os.Args[1])
+	f, err := os.Open(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
+	defer f.Close()
 
 	// l := NewLexer(bytes.NewReader(b))
 	// for {
@@ -33,8 +34,8 @@ func main() {
 	// }
 	// fmt.Println()
 
-	block, err := parser.Parse(parser.NewLexer(bytes.NewReader(b)))
-	fmt.Println(block.String())
+	block, err := parser.Parse(parser.NewLexer(bufio.NewReader(f)))
+	// fmt.Println(block.String())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return

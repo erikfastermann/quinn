@@ -1,6 +1,7 @@
 package run
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -11,9 +12,14 @@ import (
 
 // TODO:
 //	loops / conditionals
+//	early returns
 //	Value.Type
 //	use %s for value errors
 //	rename xxxValue -> xxxV
+//	env.{get,put} should take Atom
+//	Block not with ptr recv?
+//	_ as Ignore
+//	allow calling of string
 
 const internal = "internal error"
 
@@ -130,7 +136,13 @@ func (b *Block) run(local *environment, args []Value) (Value, error) {
 	return unit, nil
 }
 
+var errArgumentedGoBlock = errors.New("can't create argumented block from an in Go defined block")
+
 func (b *Block) withArgs(argNames []Atom) (Value, error) {
+	if b.fromGo != nil {
+		return nil, errArgumentedGoBlock
+	}
+
 	block := &(*b)
 	env := block.env
 	block.env = nil
@@ -155,7 +167,7 @@ func (b *Block) withArgs(argNames []Atom) (Value, error) {
 
 		env := env.merge()
 		for i, a := range argNames {
-			if ok := env.put(string(a), args[i]); !ok {
+			if !env.put(string(a), args[i]) {
 				panic(internal)
 			}
 		}
@@ -417,6 +429,76 @@ var builtinBlocks = []struct {
 		if ok := env.put(string(symbol), blockV); !ok {
 			return blockV, fmt.Errorf("couldn't assign to name, %s already exists", symbolV)
 		}
+		return unit, nil
+	}},
+	{"if", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("if: expected 3 arguments, got %d", len(args))
+		}
+		tBlock, ok := args[1].(*Block)
+		if !ok {
+			return args[1], fmt.Errorf("if: second argument must be a block, got %s", args[1])
+		}
+		fBlock, ok := args[2].(*Block)
+		if !ok {
+			return args[2], fmt.Errorf("if: third argument must be a block, got %s", args[2])
+		}
+		_, isUnit := args[0].(Unit)
+		if b, _ := args[0].(Bool); bool(b) || !isUnit {
+			return tBlock.run(nil, nil)
+		}
+		return fBlock.run(nil, nil)
+	}},
+	{"each", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("each: expected 3 arguments, got %d", len(args))
+		}
+		nameV, listV, blockV := args[0], args[1], args[2]
+
+		name, ok := nameV.(Atom)
+		if !ok {
+			return nameV, fmt.Errorf("each: first argument must be an atom, got %s", nameV)
+		}
+		list, ok := listV.(List)
+		if !ok {
+			return listV, fmt.Errorf("each: second argument must be a list, got %s", listV)
+		}
+		blockOrig, ok := blockV.(*Block)
+		if !ok {
+			return blockV, fmt.Errorf("each: third argument must be a block, got %s", blockV)
+		}
+
+		if blockOrig.fromGo != nil {
+			return blockOrig, errArgumentedGoBlock
+		}
+		block := &(*blockOrig)
+		env := block.env
+		block.env = nil
+		if _, ok := env.get(string(name)); ok {
+			return name, fmt.Errorf(
+				"each: can't use %s as an argument, "+
+					"already exists in the environment",
+				name,
+			)
+		}
+
+		for _, v := range list.data {
+			env := env.merge()
+			if !env.put(string(name), v) {
+				panic(internal)
+			}
+			v, err := block.run(env, nil)
+			if err != nil {
+				return v, err
+			}
+			if _, isUnit := v.(Unit); !isUnit {
+				return v, fmt.Errorf(
+					"each: block returned %s instead of unit",
+					v,
+				)
+			}
+		}
+
 		return unit, nil
 	}},
 	{"println", func(_ *environment, args []Value) (Value, error) {
