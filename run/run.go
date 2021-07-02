@@ -1,7 +1,6 @@
 package run
 
 import (
-	"errors"
 	"fmt"
 	"math/big"
 
@@ -11,41 +10,11 @@ import (
 // TODO:
 //	better printing for vals
 //	define function with args
-//	Number/parser.Number as pointer
 
 const internal = "internal error"
 
 type Value interface {
 	value()
-}
-
-type namedValue struct {
-	name  *name
-	value Value // nil == no underlying value
-}
-
-func (v namedValue) get() (Value, error) {
-	if v.value == nil {
-		// TODO: better error message with possible name
-		return nil, errors.New("no value")
-	}
-	return v.value, nil
-}
-
-func (v namedValue) onlyName() (string, error) {
-	if v.name == nil || v.value != nil {
-		if v.name == nil {
-			return "", fmt.Errorf("value %#v is unnamed", v.value)
-		} else {
-			return "", fmt.Errorf("%s has underlying value %#v", v.name.n, v.value)
-		}
-	}
-	return v.name.n, nil
-}
-
-type name struct {
-	n    string
-	next *name
 }
 
 type Unit struct{}
@@ -60,6 +29,10 @@ type String string
 
 func (String) value() {}
 
+type Atom string
+
+func (Atom) value() {}
+
 // TODO: could use unsafe to cast *parser.Number to *Number
 
 type Number struct {
@@ -69,27 +42,26 @@ type Number struct {
 func (*Number) value() {}
 
 type List struct {
-	data []namedValue
+	data []Value
 }
 
 func (List) value() {}
 
 type Block struct {
-	env    *environment
-	fromGo func(*environment, []namedValue) (namedValue, error)
-	code   parser.Block
+	fromGo func(*environment, []Value) (Value, error)
+
+	env  *environment
+	code parser.Block
 }
 
 func (*Block) value() {}
 
-func (b *Block) run(local *environment, args []namedValue) (namedValue, error) {
-	env := local
-	if b.env != nil {
-		env = b.env.merge()
-	}
+func (b *Block) run(local *environment, args []Value) (Value, error) {
 	if b.fromGo != nil {
-		return b.fromGo(env, args)
+		return b.fromGo(local, args)
 	}
+
+	env := b.env.merge()
 	for i, group := range b.code {
 		v, err := evalGroup(env, group)
 		if err != nil {
@@ -99,19 +71,18 @@ func (b *Block) run(local *environment, args []namedValue) (namedValue, error) {
 		if i == len(b.code)-1 {
 			return v, nil
 		} else {
-			if _, ok := v.value.(Unit); !ok {
-				// TODO: better error message with possible name
-				return v, fmt.Errorf("non unit value %#v in not last group of block", v.value)
+			if _, ok := v.(Unit); !ok {
+				return v, fmt.Errorf("non unit value %#v in other than last group of block", v)
 			}
 		}
 	}
-	return namedValue{nil, Unit{}}, nil
+	return Unit{}, nil
 }
 
-func evalGroup(env *environment, group parser.Group) (namedValue, error) {
+func evalGroup(env *environment, group parser.Group) (Value, error) {
 	switch len(group) {
 	case 0:
-		return namedValue{nil, Unit{}}, nil
+		return Unit{}, nil
 	case 1:
 		return evalElement(env, group[0])
 	default:
@@ -121,7 +92,7 @@ func evalGroup(env *environment, group parser.Group) (namedValue, error) {
 			panic(internal)
 		}
 
-		args := make([]namedValue, len(group)-1)
+		args := make([]Value, len(group)-1)
 		for i, e := range group[1:] {
 			v, err := evalElement(env, e)
 			if err != nil {
@@ -132,9 +103,9 @@ func evalGroup(env *environment, group parser.Group) (namedValue, error) {
 
 		nameValue, ok := env.get(string(name))
 		if !ok {
-			return namedValue{}, fmt.Errorf("name %s not found", name)
+			return nil, fmt.Errorf("name %s not found", name)
 		}
-		block, ok := nameValue.value.(*Block)
+		block, ok := nameValue.(*Block)
 		if !ok {
 			return nameValue, fmt.Errorf(
 				"name %s is not a block, but a %#v value instead",
@@ -146,15 +117,18 @@ func evalGroup(env *environment, group parser.Group) (namedValue, error) {
 	}
 }
 
-func evalElement(env *environment, element parser.Element) (namedValue, error) {
+func evalElement(env *environment, element parser.Element) (Value, error) {
 	switch v := element.(type) {
 	case parser.Atom:
-		val, _ := env.get(string(v))
-		return namedValue{&name{string(v), val.name}, val.value}, nil
+		val, ok := env.get(string(v))
+		if !ok {
+			return Atom(string(v)), nil
+		}
+		return val, nil
 	case parser.String:
-		return namedValue{nil, String(v)}, nil
+		return String(v), nil
 	case *parser.Number:
-		return namedValue{nil, &Number{v.Rat}}, nil
+		return &Number{v.Rat}, nil
 	case parser.Operator:
 		rhsValue, err := evalGroup(env, v.Rhs)
 		if err != nil {
@@ -167,9 +141,9 @@ func evalElement(env *environment, element parser.Element) (namedValue, error) {
 
 		symbolValue, ok := env.get(string(v.Symbol))
 		if !ok {
-			return namedValue{}, fmt.Errorf("unknown operator %s", v.Symbol)
+			return nil, fmt.Errorf("unknown operator %s", v.Symbol)
 		}
-		block, ok := symbolValue.value.(*Block)
+		block, ok := symbolValue.(*Block)
 		if !ok {
 			return symbolValue, fmt.Errorf(
 				"operator %s is not a block, but a %#v value instead",
@@ -177,9 +151,9 @@ func evalElement(env *environment, element parser.Element) (namedValue, error) {
 				symbolValue,
 			)
 		}
-		return block.run(env, []namedValue{lhsValue, rhsValue})
+		return block.run(env, []Value{lhsValue, rhsValue})
 	case parser.List:
-		l := make([]namedValue, len(v))
+		l := make([]Value, len(v))
 		for i, e := range v {
 			v, err := evalElement(env, e)
 			if err != nil {
@@ -187,11 +161,11 @@ func evalElement(env *environment, element parser.Element) (namedValue, error) {
 			}
 			l[i] = v
 		}
-		return namedValue{nil, List{l}}, nil
+		return List{l}, nil
 	case parser.Group:
 		return evalGroup(env, v)
 	case parser.Block:
-		return namedValue{nil, &Block{env: env.merge(), code: v}}, nil
+		return &Block{env: env.merge(), code: v}, nil
 	default:
 		panic(internal)
 	}
@@ -199,11 +173,11 @@ func evalElement(env *environment, element parser.Element) (namedValue, error) {
 
 // TODO: use persistent maps
 type environment struct {
-	outer map[string]namedValue
-	local map[string]namedValue
+	outer map[string]Value
+	local map[string]Value
 }
 
-func (e *environment) get(name string) (namedValue, bool) {
+func (e *environment) get(name string) (Value, bool) {
 	v, ok := e.local[name]
 	if !ok {
 		v, ok = e.outer[name]
@@ -211,14 +185,14 @@ func (e *environment) get(name string) (namedValue, bool) {
 	return v, ok
 }
 
-func (e *environment) put(name string, v namedValue) bool {
+func (e *environment) put(name string, v Value) bool {
 	_, ok0 := e.local[name]
 	_, ok1 := e.outer[name]
 	if ok0 || ok1 {
 		return false
 	}
 	if e.local == nil {
-		e.local = make(map[string]namedValue)
+		e.local = make(map[string]Value)
 	}
 	e.local[name] = v
 	return true
@@ -227,7 +201,7 @@ func (e *environment) put(name string, v namedValue) bool {
 func (e *environment) merge() *environment {
 	outer := e.outer
 	if len(e.local) > 0 {
-		outer = make(map[string]namedValue, len(e.outer)+len(e.local))
+		outer = make(map[string]Value, len(e.outer)+len(e.local))
 		for k, v := range e.outer {
 			outer[k] = v
 		}
@@ -240,57 +214,51 @@ func (e *environment) merge() *environment {
 
 var builtins = []struct {
 	name string
-	fn   func(*environment, []namedValue) (namedValue, error)
+	fn   func(*environment, []Value) (Value, error)
 }{
-	{"=", func(env *environment, args []namedValue) (namedValue, error) {
+	{"=", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			panic(internal) // op can only be called with 2 args
 		}
-		assignee, err := args[0].onlyName()
-		if err != nil {
-			return namedValue{}, fmt.Errorf("can't assign to name, %w", err)
+		assignee, ok := args[0].(Atom)
+		if !ok {
+			return nil, fmt.Errorf("can't assign to name, %#v is not an atom", args[0])
 		}
-		if ok := env.put(assignee, args[1]); !ok {
-			return namedValue{}, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
+		if ok := env.put(string(assignee), args[1]); !ok {
+			return nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
-		return namedValue{nil, Unit{}}, nil
+		return Unit{}, nil
 	}},
-	{"+", func(_ *environment, args []namedValue) (namedValue, error) {
+	{"+", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			panic(internal) // op can only be called with 2 args
 		}
-		xValue, err := args[0].get()
-		if err != nil {
-			return namedValue{}, fmt.Errorf("can't add, %w", err)
-		}
-		yValue, err := args[1].get()
-		if err != nil {
-			return namedValue{}, fmt.Errorf("can't add, %w", err)
-		}
+
+		xValue, yValue := args[0], args[1]
 		x, ok := xValue.(*Number)
 		if !ok {
-			return args[0], fmt.Errorf("can't add, %#v is not a number", args[0])
+			return xValue, fmt.Errorf("can't add, %#v is not a number", xValue)
 		}
 		y, ok := yValue.(*Number)
 		if !ok {
-			return args[1], fmt.Errorf("can't add, %#v is not a number", args[1])
+			return yValue, fmt.Errorf("can't add, %#v is not a number", yValue)
 		}
 		var z big.Rat
 		z.Add(&x.Rat, &y.Rat)
-		return namedValue{nil, &Number{z}}, nil
+		return &Number{z}, nil
 	}},
-	{"println", func(_ *environment, args []namedValue) (namedValue, error) {
+	{"println", func(_ *environment, args []Value) (Value, error) {
 		for i, v := range args {
-			_, err := fmt.Print(v.value)
+			_, err := fmt.Print(v)
 			if err != nil {
-				return namedValue{}, err
+				return nil, err
 			}
 			if i < len(args)-1 {
 				fmt.Print(" ")
 			}
 		}
 		fmt.Println()
-		return namedValue{nil, Unit{}}, nil
+		return Unit{}, nil
 	}},
 }
 
@@ -315,7 +283,7 @@ var builtins = []struct {
 func Run(block parser.Block) error {
 	b := Block{env: new(environment), code: block}
 	for _, builtin := range builtins {
-		v := namedValue{nil, &Block{fromGo: builtin.fn}}
+		v := &Block{fromGo: builtin.fn}
 		if ok := b.env.put(builtin.name, v); !ok {
 			panic(internal)
 		}
