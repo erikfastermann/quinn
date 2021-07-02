@@ -10,9 +10,11 @@ import (
 	"unicode"
 )
 
+const internal = "internal error"
+
 func must(err error) {
 	if err != nil {
-		panic("impl: " + err.Error())
+		panic(internal + ": " + err.Error())
 	}
 }
 
@@ -30,7 +32,7 @@ func (Atom) element() {}
 func (Atom) token()   {}
 
 type Number struct {
-	big.Int
+	big.Rat
 }
 
 func (*Number) element() {}
@@ -43,8 +45,7 @@ func (String) token()   {}
 
 type Symbol string
 
-func (Symbol) token()   {}
-func (Symbol) element() {}
+func (Symbol) token() {}
 
 type OpenBracket struct{}
 
@@ -96,6 +97,14 @@ type Group []Element
 
 func (Group) element() {}
 
+type Operator struct {
+	Lhs    Group
+	Symbol Symbol
+	Rhs    Group
+}
+
+func (Operator) element() {}
+
 type List []Element
 
 func (List) element() {}
@@ -139,10 +148,8 @@ func elementString(e Element, prefix string) string {
 		return string(v)
 	case String:
 		return strconv.Quote(string(v))
-	case Symbol:
-		return string(v)
 	case *Number:
-		return v.String()
+		return v.RatString()
 	case Group:
 		var b strings.Builder
 		b.WriteString("(")
@@ -154,6 +161,13 @@ func elementString(e Element, prefix string) string {
 		}
 		b.WriteString(")")
 		return b.String()
+	case Operator:
+		return fmt.Sprintf(
+			"%s %s %s",
+			elementString(v.Lhs, prefix),
+			v.Symbol,
+			elementString(v.Rhs, prefix),
+		)
 	case List:
 		var b strings.Builder
 		b.WriteString("[")
@@ -212,7 +226,7 @@ func NewLexer(r io.RuneScanner) *Lexer {
 
 func (l *Lexer) Unread() {
 	if l.lastToken == nil || l.useLastToken {
-		panic("called Lexer.Unread without successfully calling Lexer.Next first")
+		panic(internal + ": called Lexer.Unread without successfully calling Lexer.Next first")
 	}
 	l.useLastToken = true
 }
@@ -323,11 +337,11 @@ func (l *Lexer) next() (Token, error) {
 			if len(numStr) > 1 && numStr[0] == '0' {
 				return nil, fmt.Errorf("zero padded number %q", numStr)
 			}
-			var i big.Int
-			if _, ok := i.SetString(numStr, 0); !ok {
-				panic("impl")
+			var r big.Rat
+			if _, ok := r.SetString(numStr); !ok {
+				panic(internal)
 			}
-			return &Number{i}, nil
+			return &Number{r}, nil
 		} else if isAtomChar(ch) {
 			var atom strings.Builder
 			atom.WriteRune(ch)
@@ -415,9 +429,16 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 			}
 
 			rhs, err := p.group(explicitBracket, true)
-			g = Group{g, v, rhs}
+			op := Operator{g, v, rhs}
+			g = Group{op}
 			if err != nil {
 				return g, err
+			}
+			if len(op.Lhs) == 0 {
+				return g, fmt.Errorf("operator %s has an empty left side", op.Symbol)
+			}
+			if len(op.Rhs) == 0 {
+				return g, fmt.Errorf("operator %s has an empty right side", op.Symbol)
 			}
 			return g, nil
 		case ClosedBracket:
@@ -458,7 +479,7 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 		case ClosedSquare:
 			return g, errors.New("unexpected ']'")
 		default:
-			panic("impl")
+			panic(internal)
 		}
 	}
 }
@@ -506,7 +527,7 @@ func (p *parser) list() (List, error) {
 		case ClosedSquare:
 			return l, nil
 		default:
-			panic("impl")
+			panic(internal)
 		}
 	}
 }

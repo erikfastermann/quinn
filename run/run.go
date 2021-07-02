@@ -60,8 +60,10 @@ type String string
 
 func (String) value() {}
 
+// TODO: could use unsafe to cast *parser.Number to *Number
+
 type Number struct {
-	big.Int
+	big.Rat
 }
 
 func (*Number) value() {}
@@ -112,36 +114,6 @@ func evalGroup(env *environment, group parser.Group) (namedValue, error) {
 		return namedValue{nil, Unit{}}, nil
 	case 1:
 		return evalElement(env, group[0])
-	case 3:
-		rhs, ok0 := group[0].(parser.Group)
-		symbol, ok1 := group[1].(parser.Symbol)
-		lhs, ok2 := group[2].(parser.Group)
-
-		if ok0 && ok1 && ok2 {
-			rhsValue, err := evalGroup(env, rhs)
-			if err != nil {
-				return rhsValue, err
-			}
-			lhsValue, err := evalGroup(env, lhs)
-			if err != nil {
-				return lhsValue, err
-			}
-
-			symbolValue, ok := env.get(string(symbol))
-			if !ok {
-				return namedValue{}, fmt.Errorf("unknown operator %s", symbol)
-			}
-			block, ok := symbolValue.value.(*Block)
-			if !ok {
-				return symbolValue, fmt.Errorf(
-					"operator %s is not a block, but a %#v value instead",
-					symbol,
-					symbolValue,
-				)
-			}
-			return block.run(env, []namedValue{rhsValue, lhsValue})
-		}
-		fallthrough
 	default:
 		name, ok := group[0].(parser.Atom)
 		if !ok {
@@ -182,8 +154,30 @@ func evalElement(env *environment, element parser.Element) (namedValue, error) {
 	case parser.String:
 		return namedValue{nil, String(v)}, nil
 	case *parser.Number:
-		n := Number(*v)
-		return namedValue{nil, &n}, nil
+		return namedValue{nil, &Number{v.Rat}}, nil
+	case parser.Operator:
+		rhsValue, err := evalGroup(env, v.Rhs)
+		if err != nil {
+			return rhsValue, err
+		}
+		lhsValue, err := evalGroup(env, v.Lhs)
+		if err != nil {
+			return lhsValue, err
+		}
+
+		symbolValue, ok := env.get(string(v.Symbol))
+		if !ok {
+			return namedValue{}, fmt.Errorf("unknown operator %s", v.Symbol)
+		}
+		block, ok := symbolValue.value.(*Block)
+		if !ok {
+			return symbolValue, fmt.Errorf(
+				"operator %s is not a block, but a %#v value instead",
+				v.Symbol,
+				symbolValue,
+			)
+		}
+		return block.run(env, []namedValue{lhsValue, rhsValue})
 	case parser.List:
 		l := make([]namedValue, len(v))
 		for i, e := range v {
@@ -281,8 +275,9 @@ var builtins = []struct {
 		if !ok {
 			return args[1], fmt.Errorf("can't add, %#v is not a number", args[1])
 		}
-		var b big.Int
-		return namedValue{nil, &Number{*b.Add(&x.Int, &y.Int)}}, nil
+		var z big.Rat
+		z.Add(&x.Rat, &y.Rat)
+		return namedValue{nil, &Number{z}}, nil
 	}},
 	{"println", func(_ *environment, args []namedValue) (namedValue, error) {
 		for i, v := range args {
@@ -312,11 +307,11 @@ var builtins = []struct {
 //
 // the following groups are possible:
 //	stored as value:
-//		() (String) (Number) (List) (Block)
+//		() (String) (Number) (List) (Block) (Operator)
 //	stored as name (previous names are also stored) and underlying value (if any):
 //		(Atom)
 //	evaluated (arguments treated like this as well) and stored as value:
-//		(Atom ...) (Group Symbol Group)
+//		(Atom ...)
 func Run(block parser.Block) error {
 	b := Block{env: new(environment), code: block}
 	for _, builtin := range builtins {
