@@ -178,6 +178,19 @@ func (b *Block) run(local *environment, args []Value) (Value, error) {
 		return b.fromGo(env, args)
 	}
 
+	switch len(args) {
+	case 0:
+	case 1:
+		if _, isUnit := args[0].(Unit); !isUnit {
+			return nil, fmt.Errorf(
+				"first argument in call to basic block must be unit, not %s",
+				args[0],
+			)
+		}
+	default:
+		return nil, fmt.Errorf("too many arguments in call to basic block (%d)", len(args))
+	}
+
 	for i, group := range b.code {
 		v, err := evalGroup(env, group)
 		if err != nil {
@@ -230,7 +243,7 @@ func (b *Block) withArgs(argNames []Atom) (Value, error) {
 				panic(internal)
 			}
 		}
-		return block.run(env, args)
+		return block.run(env, nil)
 	}}, nil
 }
 
