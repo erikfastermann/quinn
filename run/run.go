@@ -10,7 +10,10 @@ import (
 )
 
 // TODO:
-//	define function with args
+//	loops / conditionals
+//	Value.Type
+//	use %s for value errors
+//	rename xxxValue -> xxxV
 
 const internal = "internal error"
 
@@ -89,10 +92,9 @@ func (l List) String() string {
 }
 
 type Block struct {
+	env    *environment
 	fromGo func(*environment, []Value) (Value, error)
-
-	env  *environment
-	code parser.Block
+	code   parser.Block
 }
 
 func (*Block) value() {}
@@ -126,6 +128,39 @@ func (b *Block) run(local *environment, args []Value) (Value, error) {
 		}
 	}
 	return unit, nil
+}
+
+func (b *Block) withArgs(argNames []Atom) (Value, error) {
+	block := &(*b)
+	env := block.env
+	block.env = nil
+	for _, a := range argNames {
+		if _, ok := env.get(string(a)); ok {
+			return a, fmt.Errorf(
+				"can't use %s as an argument, "+
+					"already exists in the environment",
+				a,
+			)
+		}
+	}
+
+	return &Block{fromGo: func(_ *environment, args []Value) (Value, error) {
+		if len(args) != len(argNames) {
+			return nil, fmt.Errorf(
+				"expected %d arguments, got %d",
+				len(argNames),
+				len(args),
+			)
+		}
+
+		env := env.merge()
+		for i, a := range argNames {
+			if ok := env.put(string(a), args[i]); !ok {
+				panic(internal)
+			}
+		}
+		return block.run(env, args)
+	}}, nil
 }
 
 func evalGroup(env *environment, group parser.Group) (Value, error) {
@@ -175,7 +210,7 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			}
 			return block.run(env, args)
 		default:
-			// TODO: parser: check atom is first
+			// TODO: parser: check atom/block/group is first
 			panic(internal)
 		}
 
@@ -295,10 +330,10 @@ var builtinBlocks = []struct {
 		}
 		assignee, ok := args[0].(Atom)
 		if !ok {
-			return nil, fmt.Errorf("can't assign to name, %#v is not an atom", args[0])
+			return args[0], fmt.Errorf("couldn't assign to name, %#v is not an atom", args[0])
 		}
 		if ok := env.put(string(assignee), args[1]); !ok {
-			return nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
+			return assignee, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
 		return unit, nil
 	}},
@@ -319,6 +354,70 @@ var builtinBlocks = []struct {
 		var z big.Rat
 		z.Add(&x.Rat, &y.Rat)
 		return &Number{z}, nil
+	}},
+	{"->", func(_ *environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			panic(internal) // op can only be called with 2 args
+		}
+		defValue, blockV := args[0], args[1]
+
+		def, ok := defValue.(List)
+		if !ok {
+			return defValue, fmt.Errorf(
+				"block defintion has to be a list, got %#v",
+				defValue,
+			)
+		}
+		atoms := make([]Atom, len(def.data))
+		for i, v := range def.data {
+			atom, ok := v.(Atom)
+			if !ok {
+				return v, fmt.Errorf("argument has to be atom, got %#v", v)
+			}
+			atoms[i] = atom
+		}
+
+		block, ok := blockV.(*Block)
+		if !ok {
+			return blockV, fmt.Errorf(
+				"expected block, got %#v",
+				blockV,
+			)
+		}
+		return block.withArgs(atoms)
+	}},
+	{"defop", func(env *environment, args []Value) (Value, error) {
+		// TODO: check symbol is valid operator
+
+		if len(args) != 4 {
+			return nil, fmt.Errorf("expected 4 arguments, got %d", len(args))
+		}
+		symbolV, lhsV, rhsV, blockV := args[0], args[1], args[2], args[3]
+		symbol, ok := symbolV.(String)
+		if !ok {
+			return symbolV, fmt.Errorf("first argument must be string, got %s", symbolV)
+		}
+		lhs, ok := lhsV.(Atom)
+		if !ok {
+			return lhsV, fmt.Errorf("second argument must be atom, got %s", lhsV)
+		}
+		rhs, ok := rhsV.(Atom)
+		if !ok {
+			return rhsV, fmt.Errorf("third argument must be atom, got %s", rhsV)
+		}
+		block, ok := blockV.(*Block)
+		if !ok {
+			return blockV, fmt.Errorf("fourth argument must be block, got %s", blockV)
+		}
+
+		blockV, err := block.withArgs([]Atom{lhs, rhs})
+		if err != nil {
+			return blockV, err
+		}
+		if ok := env.put(string(symbol), blockV); !ok {
+			return blockV, fmt.Errorf("couldn't assign to name, %s already exists", symbolV)
+		}
+		return unit, nil
 	}},
 	{"println", func(_ *environment, args []Value) (Value, error) {
 		for i, v := range args {
