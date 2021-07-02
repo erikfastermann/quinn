@@ -1,16 +1,25 @@
-# match x [[some y] { y } [none] { error "error" }]
+defop "&&" x y {
+	if x {
+		y ()
+	} {
+		false
+	}
+}
+
 match = ([x exprs] -> {
 	i = mut 0
 	each case exprs {
 		prev = load i
 		i <- (prev + 1)
-		if ((prev %% 2) == 0) {
-			if ((case @ 0) x) {
-				if ((len case) == 1) {
-					((exprs @ (prev+1)) ())
-				} {
-					([(case@1)] -> (exprs @ (prev+1))) x
-				}}{}}{}}})
+		if (((prev %% 2) == 0) && {(case @ 0) x}) {
+			if ((len case) == 1) {
+				((exprs @ (prev+1)) ())
+			} {
+				([(case@1)] -> (exprs @ (prev+1))) x
+			}
+		}
+	}
+})
 
 some = ([x] -> {
 	if x { true } { false }
@@ -21,6 +30,6 @@ none = ([x] -> {
 })
 
 println (match 1 [
-	[some x] { 42 }
+	[some x] { x + 41 }
 	[none] { 456 }
 ])

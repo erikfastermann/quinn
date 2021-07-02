@@ -568,20 +568,25 @@ var builtinBlocks = []struct {
 		return unit, nil
 	}},
 	{"if", func(_ *environment, args []Value) (Value, error) {
-		if len(args) != 3 {
-			return nil, fmt.Errorf("if: expected 3 arguments, got %d", len(args))
+		if len(args) < 2 || len(args) > 3 {
+			return nil, fmt.Errorf("if: expected 2 or 3 arguments, got %d", len(args))
 		}
 		tBlock, ok := args[1].(*Block)
 		if !ok {
 			return args[1], fmt.Errorf("if: second argument must be a block, got %s", args[1])
 		}
-		fBlock, ok := args[2].(*Block)
-		if !ok {
-			return args[2], fmt.Errorf("if: third argument must be a block, got %s", args[2])
-		}
+
 		_, isUnit := args[0].(Unit)
 		if b, isBool := args[0].(Bool); (isBool && !bool(b)) || isUnit {
-			return fBlock.run(nil, nil)
+			if len(args) == 3 {
+				fBlock, ok := args[2].(*Block)
+				if !ok {
+					return args[2], fmt.Errorf("if: third argument must be a block, got %s", args[2])
+				}
+				return fBlock.run(nil, nil)
+			} else {
+				return unit, nil
+			}
 		}
 		return tBlock.run(nil, nil)
 	}},
