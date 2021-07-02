@@ -21,6 +21,8 @@ type Unit struct{}
 
 func (Unit) value() {}
 
+var unit Value = Unit{}
+
 type Bool bool
 
 func (Bool) value() {}
@@ -76,22 +78,16 @@ func (b *Block) run(local *environment, args []Value) (Value, error) {
 			}
 		}
 	}
-	return Unit{}, nil
+	return unit, nil
 }
 
 func evalGroup(env *environment, group parser.Group) (Value, error) {
 	switch len(group) {
 	case 0:
-		return Unit{}, nil
+		return unit, nil
 	case 1:
 		return evalElement(env, group[0])
 	default:
-		name, ok := group[0].(parser.Atom)
-		if !ok {
-			// TODO: parser: check atom is first
-			panic(internal)
-		}
-
 		args := make([]Value, len(group)-1)
 		for i, e := range group[1:] {
 			v, err := evalElement(env, e)
@@ -101,19 +97,41 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			args[i] = v
 		}
 
-		nameValue, ok := env.get(string(name))
-		if !ok {
-			return nil, fmt.Errorf("name %s not found", name)
+		switch first := group[0].(type) {
+		case parser.Block:
+			return (&Block{env: env.merge(), code: first}).run(env, args)
+		case parser.Group:
+			blockValue, err := evalGroup(env, first)
+			if err != nil {
+				return blockValue, err
+			}
+			block, ok := blockValue.(*Block)
+			if !ok {
+				return blockValue, fmt.Errorf(
+					"can't call value %#v, not a block",
+					blockValue,
+				)
+			}
+			return block.run(env, args)
+		case parser.Atom:
+			nameValue, ok := env.get(string(first))
+			if !ok {
+				return nil, fmt.Errorf("name %s not found", first)
+			}
+			block, ok := nameValue.(*Block)
+			if !ok {
+				return nameValue, fmt.Errorf(
+					"name %s is not a block, but a %#v value instead",
+					first,
+					nameValue,
+				)
+			}
+			return block.run(env, args)
+		default:
+			// TODO: parser: check atom is first
+			panic(internal)
 		}
-		block, ok := nameValue.(*Block)
-		if !ok {
-			return nameValue, fmt.Errorf(
-				"name %s is not a block, but a %#v value instead",
-				name,
-				nameValue,
-			)
-		}
-		return block.run(env, args)
+
 	}
 }
 
@@ -227,7 +245,7 @@ var builtins = []struct {
 		if ok := env.put(string(assignee), args[1]); !ok {
 			return nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
-		return Unit{}, nil
+		return unit, nil
 	}},
 	{"+", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
@@ -258,7 +276,7 @@ var builtins = []struct {
 			}
 		}
 		fmt.Println()
-		return Unit{}, nil
+		return unit, nil
 	}},
 }
 
