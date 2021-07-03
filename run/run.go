@@ -735,6 +735,12 @@ func Run(block parser.Block) error {
 			panic(internal)
 		}
 	}
-	_, err := b.run(nil, nil)
-	return err
+	v, err := b.run(nil, nil)
+	if err != nil {
+		return err
+	}
+	if _, isUnit := v.(Unit); !isUnit {
+		return fmt.Errorf("last group in root block evaluates to %s, not unit", v)
+	}
+	return nil
 }
