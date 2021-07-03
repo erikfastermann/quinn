@@ -1,0 +1,25 @@
+defop "||" x y {
+	if x {
+		true
+	} {
+		if (y ()) {
+			true
+		} {
+			false
+		}
+	}
+}
+
+factVar = mut ()
+
+fact = ([n] -> {
+	if ((n == 0) || {n == 1}) {
+		1
+	} {
+		n * ((load factVar) (n - 1))
+	}
+})
+
+factVar <- fact
+
+println (fact 1000)

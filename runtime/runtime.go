@@ -545,14 +545,50 @@ var builtinBlocks = []struct {
 		xV, yV := args[0], args[1]
 		x, ok := xV.(*Number)
 		if !ok {
-			return xV, fmt.Errorf("can't add, %s is not a number", xV)
+			return xV, fmt.Errorf("add: %s is not a number", xV)
 		}
 		y, ok := yV.(*Number)
 		if !ok {
-			return yV, fmt.Errorf("can't add, %s is not a number", yV)
+			return yV, fmt.Errorf("add: %s is not a number", yV)
 		}
 		var z big.Rat
 		z.Add(&x.Rat, &y.Rat)
+		return &Number{z}, nil
+	}},
+	{"-", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, errOperatorArgumentsLength
+		}
+
+		xV, yV := args[0], args[1]
+		x, ok := xV.(*Number)
+		if !ok {
+			return xV, fmt.Errorf("sub: %s is not a number", xV)
+		}
+		y, ok := yV.(*Number)
+		if !ok {
+			return yV, fmt.Errorf("sub: %s is not a number", yV)
+		}
+		var z big.Rat
+		z.Sub(&x.Rat, &y.Rat)
+		return &Number{z}, nil
+	}},
+	{"*", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, errOperatorArgumentsLength
+		}
+
+		xV, yV := args[0], args[1]
+		x, ok := xV.(*Number)
+		if !ok {
+			return xV, fmt.Errorf("mul: %s is not a number", xV)
+		}
+		y, ok := yV.(*Number)
+		if !ok {
+			return yV, fmt.Errorf("mul: %s is not a number", yV)
+		}
+		var z big.Rat
+		z.Mul(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
 	{"%%", func(_ **environment, args []Value) (Value, error) {
