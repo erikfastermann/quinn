@@ -1,9 +1,1 @@
-b = {
-	if true {
-		return 1
-	} {
-		2
-	}
-}
-
-println (b ())
+println ("+" 1 2)

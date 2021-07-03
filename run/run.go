@@ -16,7 +16,6 @@ import (
 //	early returns
 //	Value.Type
 //	Block not with ptr recv?
-//	allow calling of string
 
 const internal = "internal error"
 
@@ -259,7 +258,12 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			args[i] = v
 		}
 
+		var name Atom
 		switch first := group[0].(type) {
+		case parser.Atom:
+			name = Atom(first)
+		case parser.String:
+			name = Atom(first)
 		case parser.Block:
 			return (&Block{env: env.merge(), code: first}).run(env, args)
 		case parser.Group:
@@ -275,25 +279,24 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 				)
 			}
 			return block.run(env, args)
-		case parser.Atom:
-			nameV, ok := env.get(Atom(first))
-			if !ok {
-				return nil, fmt.Errorf("name %s not found", first)
-			}
-			block, ok := nameV.(*Block)
-			if !ok {
-				return nameV, fmt.Errorf(
-					"name %s is not a block, but a %s value instead",
-					first,
-					nameV,
-				)
-			}
-			return block.run(env, args)
 		default:
-			// TODO: parser: check atom/block/group is first
+			// TODO: parser: check atom/string/block/group is first
 			panic(internal)
 		}
 
+		nameV, ok := env.get(name)
+		if !ok {
+			return nil, fmt.Errorf("name %s not found", name)
+		}
+		block, ok := nameV.(*Block)
+		if !ok {
+			return nameV, fmt.Errorf(
+				"name %s is not a block, but a %s value instead",
+				name,
+				nameV,
+			)
+		}
+		return block.run(env, args)
 	}
 }
 
@@ -423,7 +426,7 @@ var builtinBlocks = []struct {
 	}},
 	{"<-", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		targetV, v := args[0], args[1]
 		target, ok := targetV.(*Mut)
@@ -435,7 +438,7 @@ var builtinBlocks = []struct {
 	}},
 	{"=", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		assignee, ok := args[0].(Atom)
 		if !ok {
@@ -448,19 +451,19 @@ var builtinBlocks = []struct {
 	}},
 	{"==", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		return Bool(args[0].Eq(args[1])), nil
 	}},
 	{"!=", func(env *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		return Bool(!args[0].Eq(args[1])), nil
 	}},
 	{"+", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 
 		xV, yV := args[0], args[1]
@@ -478,7 +481,7 @@ var builtinBlocks = []struct {
 	}},
 	{"%%", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 
 		xV, yV := args[0], args[1]
@@ -514,7 +517,7 @@ var builtinBlocks = []struct {
 	}},
 	{"->", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		defV, blockV := args[0], args[1]
 
@@ -651,7 +654,7 @@ var builtinBlocks = []struct {
 	}},
 	{"@", func(_ *environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			panic(internal) // op can only be called with 2 args
+			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		listV, numV := args[0], args[1]
 		list, ok := listV.(List)
@@ -718,7 +721,7 @@ var builtinBlocks = []struct {
 //	stored as name (previous names are also stored) and underlying value (if any):
 //		(Atom)
 //	evaluated (arguments treated like this as well) and stored as value:
-//		(Atom ...)
+//		(Atom ...) (Block ...) (Group ...) (String ...)
 func Run(block parser.Block) error {
 	b := Block{env: new(environment), code: block}
 	for _, builtin := range builtinBlocks {
