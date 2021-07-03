@@ -133,6 +133,34 @@ func (l List) String() string {
 	return b.String()
 }
 
+func (l List) Iterator() Iterator {
+	return Iterator{func() func() (Value, bool) {
+		idx := 0
+		return func() (Value, bool) {
+			if idx >= len(l.data) {
+				return nil, false
+			}
+			v := l.data[idx]
+			idx++
+			return v, true
+		}
+	}}
+}
+
+type Iterator struct {
+	Start func() func() (Value, bool)
+}
+
+func (Iterator) value() {}
+
+func (Iterator) Eq(_ Value) bool {
+	return false
+}
+
+func (Iterator) String() string {
+	return "iterator"
+}
+
 type Mut struct {
 	v Value
 }
@@ -441,6 +469,14 @@ var builtinOther = []struct {
 	{"true", Bool(true)},
 }
 
+var errOperatorArgumentsLength = errors.New("operator can only be called with 2 arguments")
+
+var one big.Int
+
+func init() {
+	one.SetInt64(1)
+}
+
 var builtinBlocks = []struct {
 	name Atom
 	fn   func(**environment, []Value) (Value, error)
@@ -464,7 +500,7 @@ var builtinBlocks = []struct {
 	}},
 	{"<-", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		targetV, v := args[0], args[1]
 		target, ok := targetV.(*Mut)
@@ -476,7 +512,7 @@ var builtinBlocks = []struct {
 	}},
 	{"=", func(env **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		assignee, ok := args[0].(Atom)
 		if !ok {
@@ -491,19 +527,19 @@ var builtinBlocks = []struct {
 	}},
 	{"==", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		return Bool(args[0].Eq(args[1])), nil
 	}},
 	{"!=", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		return Bool(!args[0].Eq(args[1])), nil
 	}},
 	{"+", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 
 		xV, yV := args[0], args[1]
@@ -521,7 +557,7 @@ var builtinBlocks = []struct {
 	}},
 	{"%%", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 
 		xV, yV := args[0], args[1]
@@ -557,7 +593,7 @@ var builtinBlocks = []struct {
 	}},
 	{"->", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		defV, blockV := args[0], args[1]
 
@@ -644,19 +680,55 @@ var builtinBlocks = []struct {
 		}
 		return tBlock.run(nil, nil)
 	}},
+	{"..", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, errOperatorArgumentsLength
+		}
+		startV, endV := args[0], args[1]
+		startN, ok := startV.(*Number)
+		if !ok || !startN.IsInt() {
+			return startV, fmt.Errorf("range: start is %s, not an integer", startV)
+		}
+		endN, ok := endV.(*Number)
+		if !ok || !endN.IsInt() {
+			return endV, fmt.Errorf("range: end is %s, not an integer", endV)
+		}
+		startOrig, end := startN.Num(), endN.Num()
+		if startOrig.Cmp(end) > 0 {
+			return startV, fmt.Errorf(
+				"range: start %s is greater than end %s",
+				startN,
+				endN,
+			)
+		}
+
+		var start big.Int
+		start.Set(startOrig)
+		return Iterator{func() func() (Value, bool) {
+			return func() (Value, bool) {
+				if start.Cmp(end) >= 0 {
+					return nil, false
+				}
+				var current big.Rat
+				current.SetInt(&start)
+				start.Add(&start, &one)
+				return &Number{current}, true
+			}
+		}}, nil
+	}},
 	{"each", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 3 {
 			return nil, fmt.Errorf("each: expected 3 arguments, got %d", len(args))
 		}
-		nameV, listV, blockV := args[0], args[1], args[2]
+		nameV, iterV, blockV := args[0], args[1], args[2]
 
 		name, ok := nameV.(Atom)
 		if !ok {
 			return nameV, fmt.Errorf("each: first argument must be an atom, got %s", nameV)
 		}
-		list, ok := listV.(List)
+		iter, ok := iterV.(Iterator)
 		if !ok {
-			return listV, fmt.Errorf("each: second argument must be a list, got %s", listV)
+			return iterV, fmt.Errorf("each: second argument must be an iterator, got %s", iterV)
 		}
 		blockOrig, ok := blockV.(*Block)
 		if !ok {
@@ -677,7 +749,12 @@ var builtinBlocks = []struct {
 			)
 		}
 
-		for _, v := range list.data {
+		next := iter.Start()
+		for {
+			v, ok := next()
+			if !ok {
+				return unit, nil
+			}
 			callEnv, ok := env.insert(name, v)
 			if !ok {
 				panic(internal)
@@ -691,12 +768,21 @@ var builtinBlocks = []struct {
 				return v, nil
 			}
 		}
-
-		return unit, nil
+	}},
+	{"lit", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("lit: expected 1 argument, got %d", len(args))
+		}
+		listV := args[0]
+		list, ok := listV.(List)
+		if !ok {
+			return listV, fmt.Errorf("lit: first argument must be a list, got %s", listV)
+		}
+		return list.Iterator(), nil
 	}},
 	{"@", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
-			return nil, fmt.Errorf("operator can only be called with 2 arguments")
+			return nil, errOperatorArgumentsLength
 		}
 		listV, numV := args[0], args[1]
 		list, ok := listV.(List)

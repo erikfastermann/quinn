@@ -8,7 +8,7 @@ defop "&&" x y {
 
 match = ([x exprs] -> {
 	i = mut 0
-	each case exprs {
+	each case (lit exprs) {
 		prev = load i
 		i <- (prev + 1)
 		if (((prev %% 2) == 0) && {(case @ 0) x}) {

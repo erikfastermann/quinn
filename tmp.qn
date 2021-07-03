@@ -1,1 +1,1 @@
-42
+each i (0..5) { println i }
