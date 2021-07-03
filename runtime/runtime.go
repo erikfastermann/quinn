@@ -149,7 +149,7 @@ func (m *Mut) String() string {
 
 type Block struct {
 	env    *environment
-	fromGo func(*environment, []Value) (Value, error)
+	fromGo func(**environment, []Value) (Value, error)
 	code   parser.Block
 }
 
@@ -163,10 +163,14 @@ func (*Block) String() string {
 	return "<block>"
 }
 
-func (b *Block) run(local *environment, args []Value) (Value, error) {
+func (b *Block) run(local **environment, args []Value) (Value, error) {
 	env := local
 	if b.env != nil {
-		env = b.env.merge()
+		currentEnv := b.env
+		env = &currentEnv
+	}
+	if env == nil {
+		panic(internal)
 	}
 
 	if b.fromGo != nil {
@@ -223,7 +227,7 @@ func (b *Block) withArgs(argNames []Atom) (Value, error) {
 		}
 	}
 
-	return &Block{fromGo: func(_ *environment, args []Value) (Value, error) {
+	return &Block{fromGo: func(_ **environment, args []Value) (Value, error) {
 		if len(args) != len(argNames) {
 			return nil, fmt.Errorf(
 				"expected %d arguments, got %d",
@@ -232,17 +236,18 @@ func (b *Block) withArgs(argNames []Atom) (Value, error) {
 			)
 		}
 
-		env := env.merge()
+		currentEnv, ok := env, false
 		for i, a := range argNames {
-			if !env.put(a, args[i]) {
+			currentEnv, ok = currentEnv.insert(a, args[i])
+			if !ok {
 				panic(internal)
 			}
 		}
-		return block.run(env, nil)
+		return block.run(&currentEnv, nil)
 	}}, nil
 }
 
-func evalGroup(env *environment, group parser.Group) (Value, error) {
+func evalGroup(env **environment, group parser.Group) (Value, error) {
 	switch len(group) {
 	case 0:
 		return unit, nil
@@ -265,7 +270,7 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 		case parser.String:
 			name = Atom(first)
 		case parser.Block:
-			return (&Block{env: env.merge(), code: first}).run(env, args)
+			return (&Block{env: *env, code: first}).run(nil, args)
 		case parser.Group:
 			blockV, err := evalGroup(env, first)
 			if err != nil {
@@ -284,7 +289,7 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 			panic(internal)
 		}
 
-		nameV, ok := env.get(name)
+		nameV, ok := (*env).get(name)
 		if !ok {
 			return nil, fmt.Errorf("name %s not found", name)
 		}
@@ -300,10 +305,10 @@ func evalGroup(env *environment, group parser.Group) (Value, error) {
 	}
 }
 
-func evalElement(env *environment, element parser.Element) (Value, error) {
+func evalElement(env **environment, element parser.Element) (Value, error) {
 	switch v := element.(type) {
 	case parser.Atom:
-		val, ok := env.get(Atom(v))
+		val, ok := (*env).get(Atom(v))
 		if !ok {
 			return Atom(string(v)), nil
 		}
@@ -322,7 +327,7 @@ func evalElement(env *environment, element parser.Element) (Value, error) {
 			return lhsV, err
 		}
 
-		symbolV, ok := env.get(Atom(v.Symbol))
+		symbolV, ok := (*env).get(Atom(v.Symbol))
 		if !ok {
 			return nil, fmt.Errorf("unknown operator %s", v.Symbol)
 		}
@@ -348,51 +353,84 @@ func evalElement(env *environment, element parser.Element) (Value, error) {
 	case parser.Group:
 		return evalGroup(env, v)
 	case parser.Block:
-		return &Block{env: env.merge(), code: v}, nil
+		return &Block{env: *env, code: v}, nil
 	default:
 		panic(internal)
 	}
 }
 
-// TODO: use persistent maps
 type environment struct {
-	outer map[Atom]Value
-	local map[Atom]Value
+	// TODO: use persistent map
+
+	key         Atom
+	value       Value
+	left, right *environment
 }
 
-func (e *environment) get(name Atom) (Value, bool) {
-	v, ok := e.local[name]
-	if !ok {
-		v, ok = e.outer[name]
+func (env *environment) get(k Atom) (Value, bool) {
+	if env == nil {
+		return nil, false
 	}
-	return v, ok
+
+	if k < env.key {
+		return env.left.get(k)
+	} else if k > env.key {
+		return env.right.get(k)
+	} else {
+		return env.value, true
+	}
 }
 
-func (e *environment) put(name Atom, v Value) bool {
-	_, ok0 := e.local[name]
-	_, ok1 := e.outer[name]
-	if ok0 || ok1 {
-		return false
+func (env *environment) insert(k Atom, v Value) (*environment, bool) {
+	if env == nil {
+		return &environment{k, v, nil, nil}, true
 	}
-	if e.local == nil {
-		e.local = make(map[Atom]Value)
-	}
-	e.local[name] = v
-	return true
-}
 
-func (e *environment) merge() *environment {
-	outer := e.outer
-	if len(e.local) > 0 {
-		outer = make(map[Atom]Value, len(e.outer)+len(e.local))
-		for k, v := range e.outer {
-			outer[k] = v
+	if k < env.key {
+		next, ok := env.left.insert(k, v)
+		if !ok {
+			return nil, false
 		}
-		for k, v := range e.local {
-			outer[k] = v
+		return &environment{env.key, env.value, next, env.right}, true
+	} else if k > env.key {
+		next, ok := env.right.insert(k, v)
+		if !ok {
+			return nil, false
 		}
+		return &environment{env.key, env.value, env.left, next}, true
+	} else {
+		return nil, false
 	}
-	return &environment{outer: outer}
+}
+
+func (env *environment) String() string {
+	s := env.stringRec()
+	if len(s) == 0 {
+		return "(map ())"
+	}
+	return fmt.Sprintf("(map %s)", s)
+}
+
+func (env *environment) stringRec() string {
+	if env == nil {
+		return ""
+	}
+
+	left := env.left.stringRec()
+	str := left
+	if len(left) > 0 {
+		str += " "
+	}
+
+	str += fmt.Sprintf("[%s %v]", env.key, env.value)
+
+	right := env.right.stringRec()
+	if len(right) > 0 {
+		str += " "
+	}
+	str += right
+
+	return str
 }
 
 var builtinOther = []struct {
@@ -405,15 +443,15 @@ var builtinOther = []struct {
 
 var builtinBlocks = []struct {
 	name Atom
-	fn   func(*environment, []Value) (Value, error)
+	fn   func(**environment, []Value) (Value, error)
 }{
-	{"mut", func(env *environment, args []Value) (Value, error) {
+	{"mut", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("mut: expected one argument, got %d", len(args))
 		}
 		return &Mut{args[0]}, nil
 	}},
-	{"load", func(env *environment, args []Value) (Value, error) {
+	{"load", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("load: expected one argument, got %d", len(args))
 		}
@@ -424,7 +462,7 @@ var builtinBlocks = []struct {
 		}
 		return target.v, nil
 	}},
-	{"<-", func(env *environment, args []Value) (Value, error) {
+	{"<-", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -436,7 +474,7 @@ var builtinBlocks = []struct {
 		target.v = v
 		return unit, nil
 	}},
-	{"=", func(env *environment, args []Value) (Value, error) {
+	{"=", func(env **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -444,24 +482,26 @@ var builtinBlocks = []struct {
 		if !ok {
 			return args[0], fmt.Errorf("couldn't assign to name, %s is not an atom", args[0])
 		}
-		if ok := env.put(assignee, args[1]); !ok {
+		nextEnv, ok := (*env).insert(assignee, args[1])
+		if !ok {
 			return assignee, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
+		*env = nextEnv
 		return unit, nil
 	}},
-	{"==", func(env *environment, args []Value) (Value, error) {
+	{"==", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		return Bool(args[0].Eq(args[1])), nil
 	}},
-	{"!=", func(env *environment, args []Value) (Value, error) {
+	{"!=", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
 		return Bool(!args[0].Eq(args[1])), nil
 	}},
-	{"+", func(_ *environment, args []Value) (Value, error) {
+	{"+", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -479,7 +519,7 @@ var builtinBlocks = []struct {
 		z.Add(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
-	{"%%", func(_ *environment, args []Value) (Value, error) {
+	{"%%", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -515,7 +555,7 @@ var builtinBlocks = []struct {
 		r.SetInt(&z)
 		return &Number{r}, nil
 	}},
-	{"->", func(_ *environment, args []Value) (Value, error) {
+	{"->", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -546,7 +586,7 @@ var builtinBlocks = []struct {
 		}
 		return block.withArgs(atoms)
 	}},
-	{"defop", func(env *environment, args []Value) (Value, error) {
+	{"defop", func(env **environment, args []Value) (Value, error) {
 		// TODO: check symbol is valid operator
 
 		if len(args) != 4 {
@@ -574,12 +614,14 @@ var builtinBlocks = []struct {
 		if err != nil {
 			return blockV, err
 		}
-		if ok := env.put(Atom(symbol), blockV); !ok {
+		nextEnv, ok := (*env).insert(Atom(symbol), blockV)
+		if !ok {
 			return blockV, fmt.Errorf("couldn't assign to name, %s already exists", symbolV)
 		}
+		*env = nextEnv
 		return unit, nil
 	}},
-	{"if", func(_ *environment, args []Value) (Value, error) {
+	{"if", func(_ **environment, args []Value) (Value, error) {
 		if len(args) < 2 || len(args) > 3 {
 			return nil, fmt.Errorf("if: expected 2 or 3 arguments, got %d", len(args))
 		}
@@ -602,7 +644,7 @@ var builtinBlocks = []struct {
 		}
 		return tBlock.run(nil, nil)
 	}},
-	{"each", func(_ *environment, args []Value) (Value, error) {
+	{"each", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 3 {
 			return nil, fmt.Errorf("each: expected 3 arguments, got %d", len(args))
 		}
@@ -636,11 +678,11 @@ var builtinBlocks = []struct {
 		}
 
 		for _, v := range list.data {
-			env := env.merge()
-			if !env.put(name, v) {
+			callEnv, ok := env.insert(name, v)
+			if !ok {
 				panic(internal)
 			}
-			v, err := block.run(env, nil)
+			v, err := block.run(&callEnv, nil)
 			if err != nil {
 				return v, err
 			}
@@ -652,7 +694,7 @@ var builtinBlocks = []struct {
 
 		return unit, nil
 	}},
-	{"@", func(_ *environment, args []Value) (Value, error) {
+	{"@", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("operator can only be called with 2 arguments")
 		}
@@ -677,7 +719,7 @@ var builtinBlocks = []struct {
 		}
 		return list.data[idx], nil
 	}},
-	{"len", func(_ *environment, args []Value) (Value, error) {
+	{"len", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 1 {
 			return nil, fmt.Errorf("len: expected 1 argument, got %d", len(args))
 		}
@@ -690,7 +732,7 @@ var builtinBlocks = []struct {
 		r.SetInt64(int64(len(l.data)))
 		return &Number{r}, nil
 	}},
-	{"println", func(_ *environment, args []Value) (Value, error) {
+	{"println", func(_ **environment, args []Value) (Value, error) {
 		for i, v := range args {
 			_, err := fmt.Print(v.String())
 			if err != nil {
@@ -703,6 +745,25 @@ var builtinBlocks = []struct {
 		fmt.Println()
 		return unit, nil
 	}},
+}
+
+var envWithBuiltins *environment = nil
+
+func init() {
+	var ok bool
+	for _, builtin := range builtinBlocks {
+		v := &Block{fromGo: builtin.fn}
+		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, v)
+		if !ok {
+			panic(internal)
+		}
+	}
+	for _, builtin := range builtinOther {
+		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, builtin.value)
+		if !ok {
+			panic(internal)
+		}
+	}
 }
 
 // calling a block places arguments internally,
@@ -723,18 +784,7 @@ var builtinBlocks = []struct {
 //	evaluated (arguments treated like this as well) and stored as value:
 //		(Atom ...) (Block ...) (Group ...) (String ...)
 func Run(block parser.Block) error {
-	b := Block{env: new(environment), code: block}
-	for _, builtin := range builtinBlocks {
-		v := &Block{fromGo: builtin.fn}
-		if ok := b.env.put(builtin.name, v); !ok {
-			panic(internal)
-		}
-	}
-	for _, builtin := range builtinOther {
-		if ok := b.env.put(builtin.name, builtin.value); !ok {
-			panic(internal)
-		}
-	}
+	b := Block{env: envWithBuiltins, code: block}
 	v, err := b.run(nil, nil)
 	if err != nil {
 		return err
