@@ -1,1 +1,3 @@
-each i (0..5) { println i }
+println ((neg (1 / 2)) / (1 / 3))
+
+if (not false) { println 42 }

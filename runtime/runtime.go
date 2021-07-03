@@ -537,6 +537,17 @@ var builtinBlocks = []struct {
 		}
 		return Bool(!args[0].Eq(args[1])), nil
 	}},
+	{"not", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("not: expected 1 argument, got %d", len(args))
+		}
+		bV := args[0]
+		b, ok := bV.(Bool)
+		if !ok {
+			return bV, fmt.Errorf("not: first argument must be bool, not %s", bV)
+		}
+		return !b, nil
+	}},
 	{"+", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, errOperatorArgumentsLength
@@ -573,6 +584,19 @@ var builtinBlocks = []struct {
 		z.Sub(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
+	{"neg", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("neg: expected 1 argument, got %d", len(args))
+		}
+		xV := args[0]
+		x, ok := xV.(*Number)
+		if !ok {
+			return xV, fmt.Errorf("neg: %s is not a number", xV)
+		}
+		var z big.Rat
+		z.Neg(&x.Rat)
+		return &Number{z}, nil
+	}},
 	{"*", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
 			return nil, errOperatorArgumentsLength
@@ -589,6 +613,29 @@ var builtinBlocks = []struct {
 		}
 		var z big.Rat
 		z.Mul(&x.Rat, &y.Rat)
+		return &Number{z}, nil
+	}},
+	{"/", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, errOperatorArgumentsLength
+		}
+
+		xV, yV := args[0], args[1]
+		x, ok := xV.(*Number)
+		if !ok {
+			return xV, fmt.Errorf("div: %s is not a number", xV)
+		}
+		y, ok := yV.(*Number)
+		if !ok {
+			return yV, fmt.Errorf("div: %s is not a number", yV)
+		}
+		var zero big.Rat
+		if y.Cmp(&zero) == 0 {
+			return yV, errors.New("div: denominator is zero")
+		}
+
+		var z big.Rat
+		z.Quo(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
 	{"%%", func(_ **environment, args []Value) (Value, error) {
