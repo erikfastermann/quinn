@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/erikfastermann/quinn/parser"
-	"github.com/erikfastermann/quinn/run"
+	"github.com/erikfastermann/quinn/runtime"
 )
 
 func main() {
@@ -41,7 +41,7 @@ func main() {
 		return
 	}
 
-	if err := run.Run(block); err != nil {
+	if err := runtime.Run(block); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
