@@ -100,6 +100,21 @@ func (n *Number) String() string {
 	return n.RatString()
 }
 
+func (n *Number) asUnsigned() (int, error) {
+	if !n.IsInt() {
+		return 0, fmt.Errorf("%s is not an integer", n)
+	}
+	num := n.Num()
+	if num.Sign() < 0 {
+		return 0, fmt.Errorf("%s is smaller than 0", n)
+	}
+	i64 := num.Int64()
+	if !num.IsInt64() || int64(int(i64)) != i64 {
+		return 0, fmt.Errorf("%s is too large", n)
+	}
+	return int(i64), nil
+}
+
 type List struct {
 	// TODO: use persistent array
 	data []Value
@@ -133,33 +148,35 @@ func (l List) String() string {
 	return b.String()
 }
 
-func (l List) Iterator() Iterator {
-	return Iterator{func() func() (Value, bool) {
-		idx := 0
-		return func() (Value, bool) {
-			if idx >= len(l.data) {
-				return nil, false
-			}
-			v := l.data[idx]
-			idx++
-			return v, true
-		}
-	}}
+// TODO: implement and use exceptions instead
+type IterationStop struct{}
+
+func (IterationStop) value() {}
+
+func (IterationStop) Eq(v Value) bool {
+	_, ok := v.(IterationStop)
+	return ok
 }
 
-type Iterator struct {
-	Start func() func() (Value, bool)
+func (IterationStop) String() string {
+	return "iteration stop"
 }
 
-func (Iterator) value() {}
+// TODO:
+// type Exception struct {
+// 	Err Value
+// }
 
-func (Iterator) Eq(_ Value) bool {
-	return false
-}
+// func (Exception) value() {}
 
-func (Iterator) String() string {
-	return "iterator"
-}
+// func (e Exceprion) Eq(v Value) bool {
+// 	e2, ok := v.(Exception)
+// 	return ok && e.Err.Eq(e2.Err)
+// }
+
+// func (e Excepion) String() string {
+// 	return fmt.Sprintf("(exception %s)", e.Err)
+// }
 
 type Mut struct {
 	v Value
@@ -197,9 +214,6 @@ func (b *Block) run(local **environment, args []Value) (Value, error) {
 		currentEnv := b.env
 		env = &currentEnv
 	}
-	if env == nil {
-		panic(internal)
-	}
 
 	if b.fromGo != nil {
 		return b.fromGo(env, args)
@@ -235,14 +249,13 @@ func (b *Block) run(local **environment, args []Value) (Value, error) {
 	return unit, nil
 }
 
-var errArgumentedGoBlock = errors.New("can't create argumented block from an in Go defined block")
-
 func (b *Block) withArgs(argNames []Atom) (Value, error) {
 	if b.fromGo != nil {
-		return nil, errArgumentedGoBlock
+		return nil, errors.New("can't create argumented block from an in Go defined block")
 	}
 
-	block := &(*b)
+	block := new(Block)
+	*block = *b
 	env := block.env
 	block.env = nil
 	for _, a := range argNames {
@@ -467,15 +480,10 @@ var builtinOther = []struct {
 }{
 	{"false", Bool(false)},
 	{"true", Bool(true)},
+	{"stop", IterationStop{}},
 }
 
 var errOperatorArgumentsLength = errors.New("operator can only be called with 2 arguments")
-
-var one big.Int
-
-func init() {
-	one.SetInt64(1)
-}
 
 var builtinBlocks = []struct {
 	name Atom
@@ -536,6 +544,22 @@ var builtinBlocks = []struct {
 			return nil, errOperatorArgumentsLength
 		}
 		return Bool(!args[0].Eq(args[1])), nil
+	}},
+	{">=", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, errOperatorArgumentsLength
+		}
+
+		xV, yV := args[0], args[1]
+		x, ok := xV.(*Number)
+		if !ok {
+			return xV, fmt.Errorf("greater or equal: %s is not a number", xV)
+		}
+		y, ok := yV.(*Number)
+		if !ok {
+			return yV, fmt.Errorf("greater or equal: %s is not a number", yV)
+		}
+		return Bool(x.Cmp(&y.Rat) >= 0), nil
 	}},
 	{"not", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 1 {
@@ -763,105 +787,25 @@ var builtinBlocks = []struct {
 		}
 		return tBlock.run(nil, nil)
 	}},
-	{"..", func(_ **environment, args []Value) (Value, error) {
-		if len(args) != 2 {
-			return nil, errOperatorArgumentsLength
+	{"loop", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("loop: expected 1 argument, got %d", len(args))
 		}
-		startV, endV := args[0], args[1]
-		startN, ok := startV.(*Number)
-		if !ok || !startN.IsInt() {
-			return startV, fmt.Errorf("range: start is %s, not an integer", startV)
-		}
-		endN, ok := endV.(*Number)
-		if !ok || !endN.IsInt() {
-			return endV, fmt.Errorf("range: end is %s, not an integer", endV)
-		}
-		startOrig, end := startN.Num(), endN.Num()
-		if startOrig.Cmp(end) > 0 {
-			return startV, fmt.Errorf(
-				"range: start %s is greater than end %s",
-				startN,
-				endN,
-			)
-		}
-
-		var start big.Int
-		start.Set(startOrig)
-		return Iterator{func() func() (Value, bool) {
-			return func() (Value, bool) {
-				if start.Cmp(end) >= 0 {
-					return nil, false
-				}
-				var current big.Rat
-				current.SetInt(&start)
-				start.Add(&start, &one)
-				return &Number{current}, true
-			}
-		}}, nil
-	}},
-	{"each", func(_ **environment, args []Value) (Value, error) {
-		if len(args) != 3 {
-			return nil, fmt.Errorf("each: expected 3 arguments, got %d", len(args))
-		}
-		nameV, iterV, blockV := args[0], args[1], args[2]
-
-		name, ok := nameV.(Atom)
+		blockV := args[0]
+		block, ok := blockV.(*Block)
 		if !ok {
-			return nameV, fmt.Errorf("each: first argument must be an atom, got %s", nameV)
+			return blockV, fmt.Errorf("loop: expected block, got %s", blockV)
 		}
-		iter, ok := iterV.(Iterator)
-		if !ok {
-			return iterV, fmt.Errorf("each: second argument must be an iterator, got %s", iterV)
-		}
-		blockOrig, ok := blockV.(*Block)
-		if !ok {
-			return blockV, fmt.Errorf("each: third argument must be a block, got %s", blockV)
-		}
-
-		if blockOrig.fromGo != nil {
-			return blockOrig, errArgumentedGoBlock
-		}
-		block := &(*blockOrig)
-		env := block.env
-		block.env = nil
-		if _, ok := env.get(name); ok {
-			return name, fmt.Errorf(
-				"each: can't use %s as an argument, "+
-					"already exists in the environment",
-				name,
-			)
-		}
-
-		next := iter.Start()
 		for {
-			v, ok := next()
-			if !ok {
-				return unit, nil
-			}
-			callEnv, ok := env.insert(name, v)
-			if !ok {
-				panic(internal)
-			}
-			v, err := block.run(&callEnv, nil)
+			// TODO: check if block needs env
+			v, err := block.run(nil, nil)
 			if err != nil {
 				return v, err
 			}
-
 			if _, isUnit := v.(Unit); !isUnit {
 				return v, nil
 			}
 		}
-	}},
-	{"lit", func(_ **environment, args []Value) (Value, error) {
-		if len(args) != 1 {
-			return nil, fmt.Errorf("lit: expected 1 argument, got %d", len(args))
-		}
-		listV := args[0]
-		list, ok := listV.(List)
-		if !ok {
-			return listV, fmt.Errorf("lit: first argument must be a list, got %s", listV)
-		}
-		return list.Iterator(), nil
 	}},
 	{"@", func(_ **environment, args []Value) (Value, error) {
 		if len(args) != 2 {
@@ -900,6 +844,103 @@ var builtinBlocks = []struct {
 		var r big.Rat
 		r.SetInt64(int64(len(l.data)))
 		return &Number{r}, nil
+	}},
+	{"append", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("append: expected 2 arguments, got %d", len(args))
+		}
+		lV, v := args[0], args[1]
+		l, ok := lV.(List)
+		if !ok {
+			return lV, fmt.Errorf("append: expected list, got %s", lV)
+		}
+		next := make([]Value, len(l.data)+1)
+		copy(next, l.data)
+		next[len(next)-1] = v
+		return List{next}, nil
+
+	}},
+	{"append_list", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("append_list: expected 2 arguments, got %d", len(args))
+		}
+		lV, l2V := args[0], args[1]
+		l, ok := lV.(List)
+		if !ok {
+			return lV, fmt.Errorf("append_list: expected list, got %s", lV)
+		}
+		l2, ok := l2V.(List)
+		if !ok {
+			return l2V, fmt.Errorf("append_list: expected list, got %s", l2V)
+		}
+
+		// TODO: if a list is empty, don't copy
+		next := make([]Value, len(l.data)+len(l2.data))
+		n := copy(next, l.data)
+		copy(next[n:], l2.data)
+		return List{next}, nil
+
+	}},
+	{"slice", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 3 {
+			return nil, fmt.Errorf("slice: expected 3 arguments, got %d", len(args))
+		}
+		lV, fromV, toV := args[0], args[1], args[2]
+		l, ok := lV.(List)
+		if !ok {
+			return lV, fmt.Errorf("slice: expected list, got %s", lV)
+		}
+		fromN, ok := fromV.(*Number)
+		if !ok {
+			return fromV, fmt.Errorf("slice: expected number, got %s", fromV)
+		}
+		toN, ok := toV.(*Number)
+		if !ok {
+			return toV, fmt.Errorf("slice: expected number, got %s", toV)
+		}
+
+		from, err := fromN.asUnsigned()
+		if err != nil {
+			return fromV, fmt.Errorf("slice: from is not valid, %w", err)
+		}
+		to, err := toN.asUnsigned()
+		if err != nil {
+			return toV, fmt.Errorf("slice: to is not valid, %w", err)
+		}
+
+		if from > len(l.data) {
+			return fromV, fmt.Errorf("slice: from (%d) is too large", from)
+		}
+		if to > len(l.data) {
+			return toV, fmt.Errorf("slice: to (%d) is too large", from)
+		}
+		if from > to {
+			return fromV, fmt.Errorf(
+				"slice: from (%d) is bigger than to (%d)",
+				from,
+				to,
+			)
+		}
+
+		return List{l.data[from:to]}, nil
+	}},
+	{"call", func(_ **environment, args []Value) (Value, error) {
+		if len(args) != 2 {
+			return nil, fmt.Errorf("call: expected 2 arguments, got %d", len(args))
+		}
+		blockV, argListV := args[0], args[1]
+		block, ok := blockV.(*Block)
+		if !ok {
+			return blockV, fmt.Errorf("call: expected block, got %s", blockV)
+		}
+		argList, ok := argListV.(List)
+		if !ok {
+			return argListV, fmt.Errorf("call: expected list, got %s", argListV)
+		}
+
+		// TODO: check if block needs an env
+		return block.run(nil, argList.data)
+
 	}},
 	{"println", func(_ **environment, args []Value) (Value, error) {
 		for i, v := range args {
@@ -947,11 +988,11 @@ func init() {
 //
 // the following groups are possible:
 //	stored as value:
-//		() (String) (Number) (List) (Block) (Operator)
-//	stored as name (previous names are also stored) and underlying value (if any):
+//		() (String) (Number) (List) (Block) (Group) (Operator)
+//	stored as underlying value or atom:
 //		(Atom)
 //	evaluated (arguments treated like this as well) and stored as value:
-//		(Atom ...) (Block ...) (Group ...) (String ...)
+//		(Atom ...)  (String ...) (Block ...) (Group ...)
 func Run(block parser.Block) error {
 	b := Block{env: envWithBuiltins, code: block}
 	v, err := b.run(nil, nil)

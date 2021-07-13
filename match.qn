@@ -6,9 +6,25 @@ defop "&&" x y {
 	}
 }
 
+each = ([name list fn] -> {
+	i = mut 0
+	out = loop {
+		cur = load i
+		if (cur >= (len list)) {
+			stop
+		} {
+			i <- (cur + 1)
+			([name] -> fn) (list@cur)
+		}
+	}
+	if (out != stop) {
+		out
+	}
+})
+
 match = ([x exprs] -> {
 	i = mut 0
-	each case (lit exprs) {
+	each case exprs {
 		prev = load i
 		i <- (prev + 1)
 		if (((prev %% 2) == 0) && {(case @ 0) x}) {
