@@ -15,7 +15,6 @@ import (
 //	recursion
 //	early returns
 //	Value.Type
-//	Block not with ptr recv?
 
 const internal = "internal error"
 
@@ -82,8 +81,6 @@ func (a Atom) Eq(v Value) bool {
 func (a Atom) String() string {
 	return string(a)
 }
-
-// TODO: could use unsafe to cast *parser.Number to *Number
 
 type Number struct {
 	big.Rat
@@ -198,17 +195,17 @@ type Block struct {
 	code   parser.Block
 }
 
-func (*Block) value() {}
+func (Block) value() {}
 
-func (*Block) Eq(_ Value) bool {
+func (Block) Eq(_ Value) bool {
 	return false
 }
 
-func (*Block) String() string {
+func (Block) String() string {
 	return "<block>"
 }
 
-func (b *Block) run(local **environment, args []Value) (Value, error) {
+func (b Block) run(local **environment, args []Value) (Value, error) {
 	env := local
 	if b.env != nil {
 		currentEnv := b.env
@@ -249,13 +246,12 @@ func (b *Block) run(local **environment, args []Value) (Value, error) {
 	return unit, nil
 }
 
-func (b *Block) withArgs(argNames []Atom) (Value, error) {
+func (b Block) withArgs(argNames []Atom) (Value, error) {
 	if b.fromGo != nil {
 		return nil, errors.New("can't create argumented block from an in Go defined block")
 	}
 
-	block := new(Block)
-	*block = *b
+	block := b
 	env := block.env
 	block.env = nil
 	for _, a := range argNames {
@@ -268,7 +264,7 @@ func (b *Block) withArgs(argNames []Atom) (Value, error) {
 		}
 	}
 
-	return &Block{fromGo: func(_ **environment, args []Value) (Value, error) {
+	return Block{fromGo: func(_ **environment, args []Value) (Value, error) {
 		if len(args) != len(argNames) {
 			return nil, fmt.Errorf(
 				"expected %d arguments, got %d",
@@ -317,7 +313,7 @@ func evalGroup(env **environment, group parser.Group) (Value, error) {
 			if err != nil {
 				return blockV, err
 			}
-			block, ok := blockV.(*Block)
+			block, ok := blockV.(Block)
 			if !ok {
 				return blockV, fmt.Errorf(
 					"can't call value %s, not a block",
@@ -334,7 +330,7 @@ func evalGroup(env **environment, group parser.Group) (Value, error) {
 		if !ok {
 			return nil, fmt.Errorf("name %s not found", name)
 		}
-		block, ok := nameV.(*Block)
+		block, ok := nameV.(Block)
 		if !ok {
 			return nameV, fmt.Errorf(
 				"name %s is not a block, but a %s value instead",
@@ -372,7 +368,7 @@ func evalElement(env **environment, element parser.Element) (Value, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown operator %s", v.Symbol)
 		}
-		block, ok := symbolV.(*Block)
+		block, ok := symbolV.(Block)
 		if !ok {
 			return symbolV, fmt.Errorf(
 				"operator %s is not a block, but a %s value instead",
@@ -394,7 +390,7 @@ func evalElement(env **environment, element parser.Element) (Value, error) {
 	case parser.Group:
 		return evalGroup(env, v)
 	case parser.Block:
-		return &Block{env: *env, code: v}, nil
+		return Block{env: *env, code: v}, nil
 	default:
 		panic(internal)
 	}
@@ -402,6 +398,7 @@ func evalElement(env **environment, element parser.Element) (Value, error) {
 
 type environment struct {
 	// TODO: use persistent map
+	// TODO: iterative
 
 	key         Atom
 	value       Value
@@ -720,7 +717,7 @@ var builtinBlocks = []struct {
 			atoms[i] = atom
 		}
 
-		block, ok := blockV.(*Block)
+		block, ok := blockV.(Block)
 		if !ok {
 			return blockV, fmt.Errorf(
 				"expected block, got %s",
@@ -748,13 +745,14 @@ var builtinBlocks = []struct {
 		if !ok {
 			return rhsV, fmt.Errorf("third argument must be atom, got %s", rhsV)
 		}
-		block, ok := blockV.(*Block)
+		block, ok := blockV.(Block)
 		if !ok {
 			return blockV, fmt.Errorf("fourth argument must be block, got %s", blockV)
 		}
 
 		blockV, err := block.withArgs([]Atom{lhs, rhs})
 		if err != nil {
+			// TODO: blockV already overwritten
 			return blockV, err
 		}
 		nextEnv, ok := (*env).insert(Atom(symbol), blockV)
@@ -768,7 +766,7 @@ var builtinBlocks = []struct {
 		if len(args) < 2 || len(args) > 3 {
 			return nil, fmt.Errorf("if: expected 2 or 3 arguments, got %d", len(args))
 		}
-		tBlock, ok := args[1].(*Block)
+		tBlock, ok := args[1].(Block)
 		if !ok {
 			return args[1], fmt.Errorf("if: second argument must be a block, got %s", args[1])
 		}
@@ -776,7 +774,7 @@ var builtinBlocks = []struct {
 		_, isUnit := args[0].(Unit)
 		if b, isBool := args[0].(Bool); (isBool && !bool(b)) || isUnit {
 			if len(args) == 3 {
-				fBlock, ok := args[2].(*Block)
+				fBlock, ok := args[2].(Block)
 				if !ok {
 					return args[2], fmt.Errorf("if: third argument must be a block, got %s", args[2])
 				}
@@ -792,7 +790,7 @@ var builtinBlocks = []struct {
 			return nil, fmt.Errorf("loop: expected 1 argument, got %d", len(args))
 		}
 		blockV := args[0]
-		block, ok := blockV.(*Block)
+		block, ok := blockV.(Block)
 		if !ok {
 			return blockV, fmt.Errorf("loop: expected block, got %s", blockV)
 		}
@@ -929,7 +927,7 @@ var builtinBlocks = []struct {
 			return nil, fmt.Errorf("call: expected 2 arguments, got %d", len(args))
 		}
 		blockV, argListV := args[0], args[1]
-		block, ok := blockV.(*Block)
+		block, ok := blockV.(Block)
 		if !ok {
 			return blockV, fmt.Errorf("call: expected block, got %s", blockV)
 		}
@@ -962,7 +960,7 @@ var envWithBuiltins *environment = nil
 func init() {
 	var ok bool
 	for _, builtin := range builtinBlocks {
-		v := &Block{fromGo: builtin.fn}
+		v := Block{fromGo: builtin.fn}
 		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, v)
 		if !ok {
 			panic(internal)
