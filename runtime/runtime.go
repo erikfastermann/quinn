@@ -191,33 +191,37 @@ func (m *Mut) String() string {
 	return fmt.Sprintf("(mut %s)", m.v)
 }
 
-type Block struct {
-	env    *environment
-	fromGo interface{}
-	code   parser.Block
+type Block interface {
+	Value
+	runWithoutEnv(args ...Value) (Value, error)
+	runWithEnv(env *environment, args ...Value) (*environment, Value, error)
 }
 
-func (Block) value() {}
+type basicBlock struct {
+	env  *environment
+	code parser.Block
+}
 
-func (Block) Eq(_ Value) bool {
+func (basicBlock) value() {}
+
+func (basicBlock) Eq(_ Value) bool {
 	return false
 }
 
-func (Block) String() string {
+func (basicBlock) String() string {
 	return "<block>"
 }
 
-func (b Block) run(local **environment, args []Value) (Value, error) {
-	env := local
-	if b.env != nil {
-		currentEnv := b.env
-		env = &currentEnv
-	}
+func (b basicBlock) runWithoutEnv(args ...Value) (Value, error) {
+	return runCode(b.env, b.code, args...)
+}
 
-	if b.fromGo != nil {
-		return b.runInterface(env, args)
-	}
+func (b basicBlock) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+	v, err := runCode(b.env, b.code, args...)
+	return env, v, err
+}
 
+func runCode(env *environment, code parser.Block, args ...Value) (Value, error) {
 	switch len(args) {
 	case 0:
 	case 1:
@@ -231,118 +235,201 @@ func (b Block) run(local **environment, args []Value) (Value, error) {
 		return nil, fmt.Errorf("too many arguments in call to basic block (%d)", len(args))
 	}
 
-	for i, group := range b.code {
-		v, err := evalGroup(env, group)
+	for i, group := range code {
+		var (
+			v   Value
+			err error
+		)
+		env, v, err = evalGroup(env, group)
 		if err != nil {
-			return v, err
+			return nil, err
 		}
 
-		if i == len(b.code)-1 {
+		if i == len(code)-1 {
 			return v, nil
 		} else {
 			if _, ok := v.(Unit); !ok {
-				return v, fmt.Errorf("non unit value %s in other than last group of block", v)
+				return nil, fmt.Errorf("non unit value %s in other than last group of block", v)
 			}
 		}
 	}
 	return unit, nil
 }
 
-var (
-	typeValue             = reflect.TypeOf((*Value)(nil)).Elem()
-	typeError             = reflect.TypeOf((*error)(nil)).Elem()
-	typePtrPtrEnvironment = reflect.TypeOf((**environment)(nil))
-)
-
-func (b Block) runInterface(env **environment, args []Value) (Value, error) {
-	if fn, ok := b.fromGo.(func(**environment, ...Value) (Value, error)); ok {
-		return fn(env, args...)
-	}
-
-	fn := reflect.ValueOf(b.fromGo)
-	t := fn.Type()
-	if t.Kind() != reflect.Func ||
-		t.NumIn() < 1 ||
-		t.In(0) != typePtrPtrEnvironment ||
-		t.NumOut() != 2 ||
-		t.Out(0) != typeValue ||
-		t.Out(1) != typeError {
-		panic(internal)
-	}
-
-	expected, got := t.NumIn()-1, len(args)
-	if !t.IsVariadic() {
-		if expected != got {
-			return nil, fmt.Errorf("expected %d arguments, got %d", expected, got)
-		}
-	} else {
-		expected--
-		if got < expected {
-			return nil, fmt.Errorf("expected at least %d arguments, got %d", expected, got)
-		}
-	}
-
-	in := make([]reflect.Value, t.NumIn())
-	in[0] = reflect.ValueOf(env)
-
-	upperBound := t.NumIn()
-	if t.IsVariadic() {
-		upperBound--
-	}
-	for inIdx := 1; inIdx < upperBound; inIdx++ {
-		argIdx := inIdx - 1
-		arg := args[argIdx]
-		v := reflect.ValueOf(arg)
-		inType := t.In(inIdx)
-		if !v.Type().ConvertibleTo(inType) {
-			// TODO: better error message for inType
-			return arg, fmt.Errorf(
-				"%d. argument: expected %s, got %s",
-				argIdx+1,
-				inType.String(),
-				arg.String(),
+func (b basicBlock) withArgs(argNames ...Atom) (Block, error) {
+	for _, a := range argNames {
+		if _, ok := b.env.get(a); ok {
+			return nil, fmt.Errorf(
+				"can't use %s as an argument, "+
+					"already exists in the environment",
+				a,
 			)
 		}
-		in[inIdx] = v.Convert(inType)
+	}
+	return argBlock{argNames, b.env, b.code}, nil
+}
+
+type argBlock struct {
+	argNames []Atom
+	env      *environment
+	code     parser.Block
+}
+
+func (argBlock) value() {}
+
+func (argBlock) Eq(_ Value) bool {
+	return false
+}
+
+func (argBlock) String() string {
+	return "<block>"
+}
+
+func (b argBlock) runWithoutEnv(args ...Value) (Value, error) {
+	if len(args) != len(b.argNames) {
+		return nil, fmt.Errorf(
+			"expected %d arguments, got %d",
+			len(b.argNames),
+			len(args),
+		)
 	}
 
-	var out []reflect.Value
-	if t.IsVariadic() {
-		start := len(in) - 2
-		remainder := args[start:]
-		sliceType := t.In(t.NumIn() - 1)
-		s := reflect.MakeSlice(
-			sliceType,
-			len(remainder),
-			len(remainder),
-		)
-
-		toType := sliceType.Elem()
-		for i := range remainder {
-			vv := remainder[i]
-			v, to := reflect.ValueOf(vv), s.Index(i)
-			if !v.Type().ConvertibleTo(toType) {
-				// TODO: better error message for v
-				return nil, fmt.Errorf(
-					"%d. argument: expected %s, got %s",
-					start+i+1,
-					toType.String(),
-					vv.String(),
-				)
-			}
-			to.Set(v.Convert(toType))
+	env, ok := b.env, false
+	for i, a := range b.argNames {
+		env, ok = env.insert(a, args[i])
+		if !ok {
+			panic(internal)
 		}
-		in[len(in)-1] = s
+	}
+	return runCode(env, b.code)
+}
 
-		out = fn.CallSlice(in)
-	} else {
-		out = fn.Call(in)
+func (b argBlock) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+	v, err := b.runWithoutEnv(args...)
+	return env, v, err
+}
+
+var (
+	typeValue          = reflect.TypeOf((*Value)(nil)).Elem()
+	typeError          = reflect.TypeOf((*error)(nil)).Elem()
+	typePtrEnvironment = reflect.TypeOf((*environment)(nil))
+)
+
+func newBlockFromFn(fn interface{}) (Block, error) {
+	t := reflect.TypeOf(fn)
+	if t.Kind() != reflect.Func {
+		return nil, fmt.Errorf("expected func, got %T", fn)
+	}
+
+	needEnv := false
+	switch numIn := t.NumOut(); numIn {
+	case 2:
+		if numIn < 1 {
+			return nil, fmt.Errorf("func %T needs at least 1 argument", fn)
+		}
+	case 3:
+		if numIn < 2 {
+			return nil, fmt.Errorf(
+				"func %T needs at least 2 arguments with 3 outputs",
+				fn,
+			)
+		}
+		if t.In(0) != typePtrEnvironment || t.Out(0) != typePtrEnvironment {
+			return nil, fmt.Errorf(
+				"func %T needs an input and output environment with 3 outputs",
+				fn,
+			)
+		}
+		needEnv = true
+	default:
+		return nil, fmt.Errorf("func %T needs 2 or 3 outputs", fn)
+	}
+	if t.Out(t.NumOut()-2) != typeValue || t.Out(t.NumOut()-1) != typeError {
+		return nil, fmt.Errorf("func %T needs Value and error as last 2 outputs", fn)
+	}
+
+	i := 0
+	inLength := t.NumIn()
+	upperBound := t.NumIn()
+	if needEnv {
+		i++
+		inLength--
+	}
+	if t.IsVariadic() {
+		inLength--
+		upperBound--
+	}
+
+	in := make([]reflect.Type, inLength)
+	for inIdx := 0; i < upperBound; i, inIdx = i+1, inIdx+1 {
+		inType := t.In(i)
+		if !inType.ConvertibleTo(typeValue) {
+			return nil, fmt.Errorf(
+				"argument of func %T is not convertible to Value",
+				fn,
+			)
+		}
+		in[inIdx] = inType
+	}
+
+	var slice reflect.Type
+	if t.IsVariadic() {
+		slice = t.In(t.NumIn() - 1)
+		if elem := slice.Elem(); !elem.ConvertibleTo(typeValue) {
+			return nil, fmt.Errorf(
+				"variadic argument of func %T is not convertible to Value",
+				fn,
+			)
+		}
+	}
+
+	if needEnv {
+		return fnBlockWithEnv{in, slice, fn}, nil
+	}
+	return fnBlockWithoutEnv{in, slice, fn}, nil
+}
+
+type fnBlockWithoutEnv struct {
+	in    []reflect.Type
+	slice reflect.Type
+	fn    interface{}
+}
+
+func (fnBlockWithoutEnv) value() {}
+
+func (fnBlockWithoutEnv) Eq(_ Value) bool {
+	return false
+}
+
+func (fnBlockWithoutEnv) String() string {
+	return "<block>"
+}
+
+func (b fnBlockWithoutEnv) runWithoutEnv(args ...Value) (Value, error) {
+	if fn, ok := b.fn.(func(...Value) (Value, error)); ok {
+		return fn(args...)
+	}
+
+	isVariadic := b.slice != nil
+	inLen := len(b.in)
+	if isVariadic {
+		inLen++
+	}
+	in := make([]reflect.Value, inLen)
+	if err := prepareReflectCall(in, b.in, b.slice, args...); err != nil {
+		return nil, err
 	}
 
 	var (
+		out []reflect.Value
 		v   Value
 		err error
 	)
+	if isVariadic {
+		out = reflect.ValueOf(b.fn).CallSlice(in)
+	} else {
+		out = reflect.ValueOf(b.fn).Call(in)
+	}
 	if iV := out[0].Interface(); iV != nil {
 		v = iV.(Value)
 	}
@@ -352,56 +439,139 @@ func (b Block) runInterface(env **environment, args []Value) (Value, error) {
 	return v, err
 }
 
-func (b Block) withArgs(argNames []Atom) (Value, error) {
-	if b.fromGo != nil {
-		return nil, errors.New("can't create argumented block from an in Go defined block")
-	}
-
-	block := b
-	env := block.env
-	block.env = nil
-	for _, a := range argNames {
-		if _, ok := env.get(a); ok {
-			return a, fmt.Errorf(
-				"can't use %s as an argument, "+
-					"already exists in the environment",
-				a,
-			)
-		}
-	}
-
-	return Block{fromGo: func(_ **environment, args ...Value) (Value, error) {
-		if len(args) != len(argNames) {
-			return nil, fmt.Errorf(
-				"expected %d arguments, got %d",
-				len(argNames),
-				len(args),
-			)
-		}
-
-		currentEnv, ok := env, false
-		for i, a := range argNames {
-			currentEnv, ok = currentEnv.insert(a, args[i])
-			if !ok {
-				panic(internal)
-			}
-		}
-		return block.run(&currentEnv, nil)
-	}}, nil
+func (b fnBlockWithoutEnv) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+	v, err := b.runWithoutEnv(args...)
+	return env, v, err
 }
 
-func evalGroup(env **environment, group parser.Group) (Value, error) {
+type fnBlockWithEnv struct {
+	in    []reflect.Type
+	slice reflect.Type
+	fn    interface{}
+}
+
+func (fnBlockWithEnv) value() {}
+
+func (fnBlockWithEnv) Eq(_ Value) bool {
+	return false
+}
+
+func (fnBlockWithEnv) String() string {
+	return "<block>"
+}
+
+func (b fnBlockWithEnv) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+	if fn, ok := b.fn.(func(*environment, ...Value) (*environment, Value, error)); ok {
+		return fn(env, args...)
+	}
+
+	isVariadic := b.slice != nil
+	inLen := len(b.in) + 1
+	if isVariadic {
+		inLen++
+	}
+	in := make([]reflect.Value, inLen)
+	in[0] = reflect.ValueOf(env)
+	if err := prepareReflectCall(in[1:], b.in, b.slice, args...); err != nil {
+		return nil, nil, err
+	}
+
+	var (
+		out  []reflect.Value
+		next *environment
+		v    Value
+		err  error
+	)
+	if isVariadic {
+		out = reflect.ValueOf(b.fn).CallSlice(in)
+	} else {
+		out = reflect.ValueOf(b.fn).Call(in)
+	}
+	if nextV := out[0].Interface(); nextV != nil {
+		next = nextV.(*environment)
+	}
+	if iV := out[1].Interface(); iV != nil {
+		v = iV.(Value)
+	}
+	if iErr := out[2].Interface(); iErr != nil {
+		err = iErr.(error)
+	}
+	return next, v, err
+}
+
+func (b fnBlockWithEnv) runWithoutEnv(args ...Value) (Value, error) {
+	return nil, errors.New("can't run this block without an environment")
+}
+
+func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflect.Type, args ...Value) error {
+	isVariadic := slice != nil
+
+	expected, got := len(inTypes), len(args)
+	if !isVariadic && expected != got {
+		return fmt.Errorf("expected %d arguments, got %d", expected, got)
+	}
+	if got < expected {
+		return fmt.Errorf("expected at least %d arguments, got %d", expected, got)
+	}
+
+	for i := range inTypes {
+		t, arg := inTypes[i], args[i]
+		v := reflect.ValueOf(arg)
+		if !v.Type().ConvertibleTo(t) {
+			// TODO: better error message for inType
+			return fmt.Errorf(
+				"argument error: expected %s, got %s",
+				t.String(),
+				arg.String(),
+			)
+		}
+		in[i] = v.Convert(t)
+	}
+
+	if isVariadic {
+		remainder := args[len(inTypes):]
+		s := reflect.MakeSlice(
+			slice,
+			len(remainder),
+			len(remainder),
+		)
+
+		to := slice.Elem()
+		for i, vv := range remainder {
+			v := reflect.ValueOf(vv)
+			if !v.Type().ConvertibleTo(to) {
+				// TODO: better error message for v
+				return fmt.Errorf(
+					"argument error: expected %s, got %s",
+					to.String(),
+					vv.String(),
+				)
+			}
+			s.Index(i).Set(v.Convert(to))
+		}
+
+		in[len(in)-1] = s
+	}
+
+	return nil
+}
+
+func evalGroup(env *environment, group parser.Group) (*environment, Value, error) {
 	switch len(group) {
 	case 0:
-		return unit, nil
+		return env, unit, nil
 	case 1:
 		return evalElement(env, group[0])
 	default:
 		args := make([]Value, len(group)-1)
 		for i, e := range group[1:] {
-			v, err := evalElement(env, e)
+			var (
+				v   Value
+				err error
+			)
+			env, v, err = evalElement(env, e)
 			if err != nil {
-				return v, err
+				return nil, nil, err
 			}
 			args[i] = v
 		}
@@ -413,90 +583,106 @@ func evalGroup(env **environment, group parser.Group) (Value, error) {
 		case parser.String:
 			name = Atom(first)
 		case parser.Block:
-			return (&Block{env: *env, code: first}).run(nil, args)
-		case parser.Group:
-			blockV, err := evalGroup(env, first)
+			v, err := runCode(env, first, args...)
 			if err != nil {
-				return blockV, err
+				return nil, nil, err
+			}
+			return env, v, nil
+		case parser.Group:
+			var (
+				blockV Value
+				err    error
+			)
+			env, blockV, err = evalGroup(env, first)
+			if err != nil {
+				return nil, nil, err
 			}
 			block, ok := blockV.(Block)
 			if !ok {
-				return blockV, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"can't call value %s, not a block",
 					blockV,
 				)
 			}
-			return block.run(env, args)
+			return block.runWithEnv(env, args...)
 		default:
 			// TODO: parser: check atom/string/block/group is first
 			panic(internal)
 		}
 
-		nameV, ok := (*env).get(name)
+		nameV, ok := env.get(name)
 		if !ok {
-			return nil, fmt.Errorf("name %s not found", name)
+			return nil, nil, fmt.Errorf("name %s not found", name)
 		}
 		block, ok := nameV.(Block)
 		if !ok {
-			return nameV, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"name %s is not a block, but a %s value instead",
 				name,
-				nameV,
+				nameV.String(),
 			)
 		}
-		return block.run(env, args)
+		return block.runWithEnv(env, args...)
 	}
 }
 
-func evalElement(env **environment, element parser.Element) (Value, error) {
+func evalElement(env *environment, element parser.Element) (*environment, Value, error) {
 	switch v := element.(type) {
 	case parser.Atom:
-		val, ok := (*env).get(Atom(v))
+		val, ok := env.get(Atom(v))
 		if !ok {
-			return Atom(string(v)), nil
+			return env, Atom(string(v)), nil
 		}
-		return val, nil
+		return env, val, nil
 	case parser.String:
-		return String(v), nil
+		return env, String(v), nil
 	case *parser.Number:
-		return &Number{v.Rat}, nil
+		return env, &Number{v.Rat}, nil
 	case parser.Operator:
-		rhsV, err := evalGroup(env, v.Rhs)
+		var (
+			lhsV, rhsV Value
+			err        error
+		)
+		env, lhsV, err = evalGroup(env, v.Lhs)
 		if err != nil {
-			return rhsV, err
+			return nil, nil, err
 		}
-		lhsV, err := evalGroup(env, v.Lhs)
+		env, rhsV, err = evalGroup(env, v.Rhs)
 		if err != nil {
-			return lhsV, err
+			return nil, nil, err
 		}
 
-		symbolV, ok := (*env).get(Atom(v.Symbol))
+		symbolV, ok := env.get(Atom(v.Symbol))
 		if !ok {
-			return nil, fmt.Errorf("unknown operator %s", v.Symbol)
+			return nil, nil, fmt.Errorf("unknown operator %s", v.Symbol)
 		}
 		block, ok := symbolV.(Block)
 		if !ok {
-			return symbolV, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"operator %s is not a block, but a %s value instead",
 				v.Symbol,
 				symbolV,
 			)
 		}
-		return block.run(env, []Value{lhsV, rhsV})
+		return block.runWithEnv(env, lhsV, rhsV)
 	case parser.List:
 		l := make([]Value, len(v))
 		for i, e := range v {
-			v, err := evalElement(env, e)
+			var (
+				v   Value
+				err error
+			)
+			env, v, err = evalElement(env, e)
 			if err != nil {
-				return v, err
+				return nil, nil, err
 			}
 			l[i] = v
 		}
-		return List{l}, nil
+		return env, List{l}, nil
 	case parser.Group:
 		return evalGroup(env, v)
 	case parser.Block:
-		return Block{env: *env, code: v}, nil
+		return env, basicBlock{env, v}, nil
 	default:
 		panic(internal)
 	}
@@ -504,7 +690,6 @@ func evalElement(env **environment, element parser.Element) (Value, error) {
 
 type environment struct {
 	// TODO: use persistent map
-	// TODO: iterative
 
 	key         Atom
 	value       Value
@@ -512,6 +697,8 @@ type environment struct {
 }
 
 func (env *environment) get(k Atom) (Value, bool) {
+	// TODO: iterative
+
 	if env == nil {
 		return nil, false
 	}
@@ -590,57 +777,56 @@ var builtinBlocks = []struct {
 	name Atom
 	fn   interface{}
 }{
-	{"mut", func(_ **environment, v Value) (Value, error) {
+	{"mut", func(v Value) (Value, error) {
 		return &Mut{v}, nil
 	}},
-	{"load", func(_ **environment, target *Mut) (Value, error) {
+	{"load", func(target *Mut) (Value, error) {
 		return target.v, nil
 	}},
-	{"<-", func(_ **environment, target *Mut, v Value) (Value, error) {
+	{"<-", func(target *Mut, v Value) (Value, error) {
 		target.v = v
 		return unit, nil
 	}},
-	{"=", func(env **environment, assignee Atom, v Value) (Value, error) {
-		nextEnv, ok := (*env).insert(assignee, v)
+	{"=", func(env *environment, assignee Atom, v Value) (*environment, Value, error) {
+		next, ok := env.insert(assignee, v)
 		if !ok {
-			return nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
+			return nil, nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
-		*env = nextEnv
-		return unit, nil
+		return next, unit, nil
 	}},
-	{"==", func(_ **environment, x, y Value) (Value, error) {
+	{"==", func(x, y Value) (Value, error) {
 		return Bool(x.Eq(y)), nil
 	}},
-	{"!=", func(_ **environment, x, y Value) (Value, error) {
+	{"!=", func(x, y Value) (Value, error) {
 		return Bool(!x.Eq(y)), nil
 	}},
-	{">=", func(_ **environment, x, y *Number) (Value, error) {
+	{">=", func(x, y *Number) (Value, error) {
 		return Bool(x.Cmp(&y.Rat) >= 0), nil
 	}},
-	{"not", func(_ **environment, b Bool) (Value, error) {
+	{"not", func(b Bool) (Value, error) {
 		return !b, nil
 	}},
-	{"+", func(_ **environment, x, y *Number) (Value, error) {
+	{"+", func(x, y *Number) (Value, error) {
 		var z big.Rat
 		z.Add(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
-	{"-", func(_ **environment, x, y *Number) (Value, error) {
+	{"-", func(x, y *Number) (Value, error) {
 		var z big.Rat
 		z.Sub(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
-	{"neg", func(_ **environment, x *Number) (Value, error) {
+	{"neg", func(x *Number) (Value, error) {
 		var z big.Rat
 		z.Neg(&x.Rat)
 		return &Number{z}, nil
 	}},
-	{"*", func(_ **environment, x, y *Number) (Value, error) {
+	{"*", func(x, y *Number) (Value, error) {
 		var z big.Rat
 		z.Mul(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
-	{"/", func(_ **environment, x, y *Number) (Value, error) {
+	{"/", func(x, y *Number) (Value, error) {
 		var zero big.Rat
 		if y.Cmp(&zero) == 0 {
 			return nil, errors.New("denominator is zero")
@@ -650,7 +836,7 @@ var builtinBlocks = []struct {
 		z.Quo(&x.Rat, &y.Rat)
 		return &Number{z}, nil
 	}},
-	{"%%", func(_ **environment, x, y *Number) (Value, error) {
+	{"%%", func(x, y *Number) (Value, error) {
 		if !x.IsInt() {
 			return nil, fmt.Errorf(
 				"%s is not an integer",
@@ -673,7 +859,7 @@ var builtinBlocks = []struct {
 		r.SetInt(&z)
 		return &Number{r}, nil
 	}},
-	{"->", func(_ **environment, def List, block Block) (Value, error) {
+	{"->", func(def List, block Block) (Value, error) {
 		atoms := make([]Atom, len(def.data))
 		for i, v := range def.data {
 			atom, ok := v.(Atom)
@@ -682,26 +868,42 @@ var builtinBlocks = []struct {
 			}
 			atoms[i] = atom
 		}
-		return block.withArgs(atoms)
+		switch b := block.(type) {
+		case basicBlock:
+			block, err := b.withArgs(atoms...)
+			if err != nil {
+				return nil, err
+			}
+			return block, nil
+		default:
+			return nil, fmt.Errorf("can't create argumented block from other than basic block")
+		}
 	}},
-	{"defop", func(env **environment, symbol String, lhs, rhs Atom, block Block) (Value, error) {
+	{"defop", func(env *environment, symbol String, lhs, rhs Atom, block Block) (*environment, Value, error) {
 		// TODO: check symbol is valid operator
 
-		blockV, err := block.withArgs([]Atom{lhs, rhs})
-		if err != nil {
-			return nil, err
+		var blockV Block
+		switch b := block.(type) {
+		case basicBlock:
+			var err error
+			blockV, err = b.withArgs(lhs, rhs)
+			if err != nil {
+				return nil, nil, err
+			}
+		default:
+			return nil, nil, fmt.Errorf("can't create argumented block from other than basic block")
 		}
-		nextEnv, ok := (*env).insert(Atom(symbol), blockV)
+
+		next, ok := env.insert(Atom(symbol), blockV)
 		if !ok {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"couldn't assign to name, %s already exists",
 				symbol.String(),
 			)
 		}
-		*env = nextEnv
-		return unit, nil
+		return next, unit, nil
 	}},
-	{"if", func(_ **environment, cond Value, tBlock Block, blocks ...Block) (Value, error) {
+	{"if", func(cond Value, tBlock Block, blocks ...Block) (Value, error) {
 		var fBlock Block
 		hasFBlock := false
 		switch len(blocks) {
@@ -716,17 +918,16 @@ var builtinBlocks = []struct {
 		_, isUnit := cond.(Unit)
 		if b, isBool := cond.(Bool); (isBool && !bool(b)) || isUnit {
 			if hasFBlock {
-				return fBlock.run(nil, nil)
+				return fBlock.runWithoutEnv()
 			} else {
 				return unit, nil
 			}
 		}
-		return tBlock.run(nil, nil)
+		return tBlock.runWithoutEnv()
 	}},
-	{"loop", func(_ **environment, block Block) (Value, error) {
+	{"loop", func(block Block) (Value, error) {
 		for {
-			// TODO: check if block needs env
-			v, err := block.run(nil, nil)
+			v, err := block.runWithoutEnv()
 			if err != nil {
 				return v, err
 			}
@@ -735,7 +936,7 @@ var builtinBlocks = []struct {
 			}
 		}
 	}},
-	{"@", func(_ **environment, l List, num *Number) (Value, error) {
+	{"@", func(l List, num *Number) (Value, error) {
 		var zero big.Int
 		if !num.IsInt() || num.Num().Cmp(&zero) < 0 {
 			return nil, fmt.Errorf("%s is not an unsigned integer", num.String())
@@ -751,19 +952,18 @@ var builtinBlocks = []struct {
 		}
 		return l.data[idx], nil
 	}},
-	{"len", func(_ **environment, l List) (Value, error) {
+	{"len", func(l List) (Value, error) {
 		var r big.Rat
 		r.SetInt64(int64(len(l.data)))
 		return &Number{r}, nil
 	}},
-	{"append", func(_ **environment, l List, v Value) (Value, error) {
+	{"append", func(l List, v Value) (Value, error) {
 		next := make([]Value, len(l.data)+1)
 		copy(next, l.data)
 		next[len(next)-1] = v
 		return List{next}, nil
-
 	}},
-	{"append_list", func(_ **environment, l, l2 List) (Value, error) {
+	{"append_list", func(l, l2 List) (Value, error) {
 		// TODO: if a list is empty, don't copy
 		next := make([]Value, len(l.data)+len(l2.data))
 		n := copy(next, l.data)
@@ -771,7 +971,7 @@ var builtinBlocks = []struct {
 		return List{next}, nil
 
 	}},
-	{"slice", func(_ **environment, l List, fromN, toN *Number) (Value, error) {
+	{"slice", func(l List, fromN, toN *Number) (Value, error) {
 		from, err := fromN.asUnsigned()
 		if err != nil {
 			return nil, fmt.Errorf("from is not valid, %w", err)
@@ -796,12 +996,10 @@ var builtinBlocks = []struct {
 		}
 		return List{l.data[from:to]}, nil
 	}},
-	{"call", func(_ **environment, b Block, args List) (Value, error) {
-		// TODO: check if block needs an env
-		return b.run(nil, args.data)
-
+	{"call", func(b Block, args List) (Value, error) {
+		return b.runWithoutEnv(args.data...)
 	}},
-	{"println", func(_ **environment, args ...Value) (Value, error) {
+	{"println", func(args ...Value) (Value, error) {
 		for i, v := range args {
 			_, err := fmt.Print(v.String())
 			if err != nil {
@@ -821,8 +1019,11 @@ var envWithBuiltins *environment = nil
 func init() {
 	var ok bool
 	for _, builtin := range builtinBlocks {
-		v := Block{fromGo: builtin.fn}
-		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, v)
+		b, err := newBlockFromFn(builtin.fn)
+		if err != nil {
+			panic(internal + ": " + err.Error())
+		}
+		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, b)
 		if !ok {
 			panic(internal)
 		}
@@ -853,8 +1054,7 @@ func init() {
 //	evaluated (arguments treated like this as well) and stored as value:
 //		(Atom ...)  (String ...) (Block ...) (Group ...)
 func Run(block parser.Block) error {
-	b := Block{env: envWithBuiltins, code: block}
-	v, err := b.run(nil, nil)
+	v, err := runCode(envWithBuiltins, block)
 	if err != nil {
 		return err
 	}
