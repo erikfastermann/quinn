@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/erikfastermann/quinn/number"
 )
 
 const internal = "internal error"
@@ -31,12 +32,10 @@ type Atom string
 func (Atom) element() {}
 func (Atom) token()   {}
 
-type Number struct {
-	big.Rat
-}
+type Number number.Number
 
-func (*Number) element() {}
-func (*Number) token()   {}
+func (Number) element() {}
+func (Number) token()   {}
 
 type String string
 
@@ -148,8 +147,8 @@ func elementString(e Element, prefix string) string {
 		return string(v)
 	case String:
 		return strconv.Quote(string(v))
-	case *Number:
-		return v.RatString()
+	case Number:
+		return (number.Number(v)).String()
 	case Group:
 		var b strings.Builder
 		b.WriteString("(")
@@ -337,11 +336,12 @@ func (l *Lexer) next() (Token, error) {
 			if len(numStr) > 1 && numStr[0] == '0' {
 				return nil, fmt.Errorf("zero padded number %q", numStr)
 			}
-			var r big.Rat
-			if _, ok := r.SetString(numStr); !ok {
-				panic(internal)
+
+			n, err := number.FromString(numStr)
+			if err != nil {
+				panic(internal + ": " + err.Error())
 			}
-			return &Number{r}, nil
+			return Number(n), nil
 		} else if isAtomChar(ch) {
 			var atom strings.Builder
 			atom.WriteRune(ch)
@@ -456,7 +456,7 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 			if !explicitBracket {
 				return g, nil
 			}
-		case Atom, String, *Number:
+		case Atom, String, Number:
 			g = append(g, v.(Element))
 		case OpenCurly:
 			b, err := p.block(true)
@@ -508,7 +508,7 @@ func (p *parser) list() (List, error) {
 				return l, err
 			}
 		case EndOfLine:
-		case Atom, String, *Number:
+		case Atom, String, Number:
 			l = append(l, v.(Element))
 		case OpenCurly:
 			b, err := p.block(true)

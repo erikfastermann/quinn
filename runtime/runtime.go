@@ -3,12 +3,13 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/erikfastermann/quinn/number"
 	"github.com/erikfastermann/quinn/parser"
+	"github.com/erikfastermann/quinn/value"
 )
 
 // TODO:
@@ -20,18 +21,9 @@ import (
 
 const internal = "internal error"
 
-type Value interface {
-	value()
-
-	Eq(Value) bool
-	String() string
-}
-
 type Unit struct{}
 
-func (Unit) value() {}
-
-func (Unit) Eq(v Value) bool {
+func (Unit) Eq(v value.Value) bool {
 	_, isUnit := v.(Unit)
 	return isUnit
 }
@@ -40,13 +32,11 @@ func (Unit) String() string {
 	return "()"
 }
 
-var unit Value = Unit{}
+var unit value.Value = Unit{}
 
 type Bool bool
 
-func (Bool) value() {}
-
-func (b Bool) Eq(v Value) bool {
+func (b Bool) Eq(v value.Value) bool {
 	b2, ok := v.(Bool)
 	return ok && b == b2
 }
@@ -60,9 +50,7 @@ func (b Bool) String() string {
 
 type String string
 
-func (String) value() {}
-
-func (s String) Eq(v Value) bool {
+func (s String) Eq(v value.Value) bool {
 	s2, ok := v.(String)
 	return ok && s == s2
 }
@@ -73,9 +61,7 @@ func (s String) String() string {
 
 type Atom string
 
-func (Atom) value() {}
-
-func (a Atom) Eq(v Value) bool {
+func (a Atom) Eq(v value.Value) bool {
 	a2, ok := v.(Atom)
 	return ok && a == a2
 }
@@ -84,44 +70,12 @@ func (a Atom) String() string {
 	return string(a)
 }
 
-type Number struct {
-	big.Rat
-}
-
-func (*Number) value() {}
-
-func (n *Number) Eq(v Value) bool {
-	n2, ok := v.(*Number)
-	return ok && n.Cmp(&n2.Rat) == 0
-}
-
-func (n *Number) String() string {
-	return n.RatString()
-}
-
-func (n *Number) asUnsigned() (int, error) {
-	if !n.IsInt() {
-		return 0, fmt.Errorf("%s is not an integer", n)
-	}
-	num := n.Num()
-	if num.Sign() < 0 {
-		return 0, fmt.Errorf("%s is smaller than 0", n)
-	}
-	i64 := num.Int64()
-	if !num.IsInt64() || int64(int(i64)) != i64 {
-		return 0, fmt.Errorf("%s is too large", n)
-	}
-	return int(i64), nil
-}
-
 type List struct {
 	// TODO: use persistent array
-	data []Value
+	data []value.Value
 }
 
-func (List) value() {}
-
-func (l List) Eq(v Value) bool {
+func (l List) Eq(v value.Value) bool {
 	l2, ok := v.(List)
 	if !ok || len(l.data) != len(l2.data) {
 		return false
@@ -150,9 +104,7 @@ func (l List) String() string {
 // TODO: implement and use exceptions instead
 type IterationStop struct{}
 
-func (IterationStop) value() {}
-
-func (IterationStop) Eq(v Value) bool {
+func (IterationStop) Eq(v value.Value) bool {
 	_, ok := v.(IterationStop)
 	return ok
 }
@@ -163,12 +115,10 @@ func (IterationStop) String() string {
 
 // TODO:
 // type Exception struct {
-// 	Err Value
+// 	Err value.Value
 // }
 
-// func (Exception) value() {}
-
-// func (e Exceprion) Eq(v Value) bool {
+// func (e Exceprion) Eq(v value.Value) bool {
 // 	e2, ok := v.(Exception)
 // 	return ok && e.Err.Eq(e2.Err)
 // }
@@ -178,12 +128,10 @@ func (IterationStop) String() string {
 // }
 
 type Mut struct {
-	v Value
+	v value.Value
 }
 
-func (*Mut) value() {}
-
-func (*Mut) Eq(_ Value) bool {
+func (*Mut) Eq(_ value.Value) bool {
 	return false
 }
 
@@ -192,9 +140,9 @@ func (m *Mut) String() string {
 }
 
 type Block interface {
-	Value
-	runWithoutEnv(args ...Value) (Value, error)
-	runWithEnv(env *environment, args ...Value) (*environment, Value, error)
+	value.Value
+	runWithoutEnv(args ...value.Value) (value.Value, error)
+	runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error)
 }
 
 const blockString = "<block>"
@@ -204,9 +152,7 @@ type basicBlock struct {
 	code parser.Block
 }
 
-func (basicBlock) value() {}
-
-func (basicBlock) Eq(_ Value) bool {
+func (basicBlock) Eq(_ value.Value) bool {
 	return false
 }
 
@@ -214,16 +160,16 @@ func (basicBlock) String() string {
 	return blockString
 }
 
-func (b basicBlock) runWithoutEnv(args ...Value) (Value, error) {
+func (b basicBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
 	return runCode(b.env, b.code, args...)
 }
 
-func (b basicBlock) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+func (b basicBlock) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
 	v, err := runCode(b.env, b.code, args...)
 	return env, v, err
 }
 
-func runCode(env *environment, code parser.Block, args ...Value) (Value, error) {
+func runCode(env *environment, code parser.Block, args ...value.Value) (value.Value, error) {
 	switch len(args) {
 	case 0:
 	case 1:
@@ -239,7 +185,7 @@ func runCode(env *environment, code parser.Block, args ...Value) (Value, error) 
 
 	for i, group := range code {
 		var (
-			v   Value
+			v   value.Value
 			err error
 		)
 		env, v, err = evalGroup(env, group)
@@ -277,9 +223,7 @@ type argBlock struct {
 	code     parser.Block
 }
 
-func (argBlock) value() {}
-
-func (argBlock) Eq(_ Value) bool {
+func (argBlock) Eq(_ value.Value) bool {
 	return false
 }
 
@@ -287,7 +231,7 @@ func (argBlock) String() string {
 	return blockString
 }
 
-func (b argBlock) runWithoutEnv(args ...Value) (Value, error) {
+func (b argBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
 	if len(args) != len(b.argNames) {
 		return nil, fmt.Errorf(
 			"expected %d arguments, got %d",
@@ -306,13 +250,13 @@ func (b argBlock) runWithoutEnv(args ...Value) (Value, error) {
 	return runCode(env, b.code)
 }
 
-func (b argBlock) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+func (b argBlock) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
 	v, err := b.runWithoutEnv(args...)
 	return env, v, err
 }
 
 var (
-	typeValue          = reflect.TypeOf((*Value)(nil)).Elem()
+	typeValue          = reflect.TypeOf((*value.Value)(nil)).Elem()
 	typeError          = reflect.TypeOf((*error)(nil)).Elem()
 	typePtrEnvironment = reflect.TypeOf((*environment)(nil))
 )
@@ -397,9 +341,7 @@ type fnBlockWithoutEnv struct {
 	fn    interface{}
 }
 
-func (fnBlockWithoutEnv) value() {}
-
-func (fnBlockWithoutEnv) Eq(_ Value) bool {
+func (fnBlockWithoutEnv) Eq(_ value.Value) bool {
 	return false
 }
 
@@ -407,8 +349,8 @@ func (fnBlockWithoutEnv) String() string {
 	return blockString
 }
 
-func (b fnBlockWithoutEnv) runWithoutEnv(args ...Value) (Value, error) {
-	if fn, ok := b.fn.(func(...Value) (Value, error)); ok {
+func (b fnBlockWithoutEnv) runWithoutEnv(args ...value.Value) (value.Value, error) {
+	if fn, ok := b.fn.(func(...value.Value) (value.Value, error)); ok {
 		return fn(args...)
 	}
 
@@ -424,7 +366,7 @@ func (b fnBlockWithoutEnv) runWithoutEnv(args ...Value) (Value, error) {
 
 	var (
 		out []reflect.Value
-		v   Value
+		v   value.Value
 		err error
 	)
 	if isVariadic {
@@ -433,7 +375,7 @@ func (b fnBlockWithoutEnv) runWithoutEnv(args ...Value) (Value, error) {
 		out = reflect.ValueOf(b.fn).Call(in)
 	}
 	if iV := out[0].Interface(); iV != nil {
-		v = iV.(Value)
+		v = iV.(value.Value)
 	}
 	if iErr := out[1].Interface(); iErr != nil {
 		err = iErr.(error)
@@ -441,7 +383,7 @@ func (b fnBlockWithoutEnv) runWithoutEnv(args ...Value) (Value, error) {
 	return v, err
 }
 
-func (b fnBlockWithoutEnv) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
+func (b fnBlockWithoutEnv) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
 	v, err := b.runWithoutEnv(args...)
 	return env, v, err
 }
@@ -452,9 +394,7 @@ type fnBlockWithEnv struct {
 	fn    interface{}
 }
 
-func (fnBlockWithEnv) value() {}
-
-func (fnBlockWithEnv) Eq(_ Value) bool {
+func (fnBlockWithEnv) Eq(_ value.Value) bool {
 	return false
 }
 
@@ -462,8 +402,8 @@ func (fnBlockWithEnv) String() string {
 	return blockString
 }
 
-func (b fnBlockWithEnv) runWithEnv(env *environment, args ...Value) (*environment, Value, error) {
-	if fn, ok := b.fn.(func(*environment, ...Value) (*environment, Value, error)); ok {
+func (b fnBlockWithEnv) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
+	if fn, ok := b.fn.(func(*environment, ...value.Value) (*environment, value.Value, error)); ok {
 		return fn(env, args...)
 	}
 
@@ -481,7 +421,7 @@ func (b fnBlockWithEnv) runWithEnv(env *environment, args ...Value) (*environmen
 	var (
 		out  []reflect.Value
 		next *environment
-		v    Value
+		v    value.Value
 		err  error
 	)
 	if isVariadic {
@@ -493,7 +433,7 @@ func (b fnBlockWithEnv) runWithEnv(env *environment, args ...Value) (*environmen
 		next = nextV.(*environment)
 	}
 	if iV := out[1].Interface(); iV != nil {
-		v = iV.(Value)
+		v = iV.(value.Value)
 	}
 	if iErr := out[2].Interface(); iErr != nil {
 		err = iErr.(error)
@@ -501,11 +441,11 @@ func (b fnBlockWithEnv) runWithEnv(env *environment, args ...Value) (*environmen
 	return next, v, err
 }
 
-func (b fnBlockWithEnv) runWithoutEnv(args ...Value) (Value, error) {
+func (b fnBlockWithEnv) runWithoutEnv(args ...value.Value) (value.Value, error) {
 	return nil, errors.New("can't run this block without an environment")
 }
 
-func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflect.Type, args ...Value) error {
+func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflect.Type, args ...value.Value) error {
 	isVariadic := slice != nil
 
 	expected, got := len(inTypes), len(args)
@@ -558,17 +498,17 @@ func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflec
 	return nil
 }
 
-func evalGroup(env *environment, group parser.Group) (*environment, Value, error) {
+func evalGroup(env *environment, group parser.Group) (*environment, value.Value, error) {
 	switch len(group) {
 	case 0:
 		return env, unit, nil
 	case 1:
 		return evalElement(env, group[0])
 	default:
-		args := make([]Value, len(group)-1)
+		args := make([]value.Value, len(group)-1)
 		for i, e := range group[1:] {
 			var (
-				v   Value
+				v   value.Value
 				err error
 			)
 			env, v, err = evalElement(env, e)
@@ -592,7 +532,7 @@ func evalGroup(env *environment, group parser.Group) (*environment, Value, error
 			return env, v, nil
 		case parser.Group:
 			var (
-				blockV Value
+				blockV value.Value
 				err    error
 			)
 			env, blockV, err = evalGroup(env, first)
@@ -628,7 +568,7 @@ func evalGroup(env *environment, group parser.Group) (*environment, Value, error
 	}
 }
 
-func evalElement(env *environment, element parser.Element) (*environment, Value, error) {
+func evalElement(env *environment, element parser.Element) (*environment, value.Value, error) {
 	switch v := element.(type) {
 	case parser.Atom:
 		val, ok := env.get(Atom(v))
@@ -638,11 +578,11 @@ func evalElement(env *environment, element parser.Element) (*environment, Value,
 		return env, val, nil
 	case parser.String:
 		return env, String(v), nil
-	case *parser.Number:
-		return env, &Number{v.Rat}, nil
+	case parser.Number:
+		return env, number.Number(v), nil
 	case parser.Operator:
 		var (
-			lhsV, rhsV Value
+			lhsV, rhsV value.Value
 			err        error
 		)
 		env, lhsV, err = evalGroup(env, v.Lhs)
@@ -668,10 +608,10 @@ func evalElement(env *environment, element parser.Element) (*environment, Value,
 		}
 		return block.runWithEnv(env, lhsV, rhsV)
 	case parser.List:
-		l := make([]Value, len(v))
+		l := make([]value.Value, len(v))
 		for i, e := range v {
 			var (
-				v   Value
+				v   value.Value
 				err error
 			)
 			env, v, err = evalElement(env, e)
@@ -694,11 +634,11 @@ type environment struct {
 	// TODO: use persistent map
 
 	key         Atom
-	value       Value
+	value       value.Value
 	left, right *environment
 }
 
-func (env *environment) get(k Atom) (Value, bool) {
+func (env *environment) get(k Atom) (value.Value, bool) {
 	// TODO: iterative
 
 	if env == nil {
@@ -714,7 +654,7 @@ func (env *environment) get(k Atom) (Value, bool) {
 	}
 }
 
-func (env *environment) insert(k Atom, v Value) (*environment, bool) {
+func (env *environment) insert(k Atom, v value.Value) (*environment, bool) {
 	if env == nil {
 		return &environment{k, v, nil, nil}, true
 	}

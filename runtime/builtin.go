@@ -1,14 +1,15 @@
 package runtime
 
 import (
-	"errors"
 	"fmt"
-	"math/big"
+
+	"github.com/erikfastermann/quinn/number"
+	"github.com/erikfastermann/quinn/value"
 )
 
 var builtinOther = []struct {
 	name  Atom
-	value Value
+	value value.Value
 }{
 	{"false", Bool(false)},
 	{"true", Bool(true)},
@@ -19,89 +20,54 @@ var builtinBlocks = []struct {
 	name Atom
 	fn   interface{}
 }{
-	{"mut", func(v Value) (Value, error) {
+	{"mut", func(v value.Value) (value.Value, error) {
 		return &Mut{v}, nil
 	}},
-	{"load", func(target *Mut) (Value, error) {
+	{"load", func(target *Mut) (value.Value, error) {
 		return target.v, nil
 	}},
-	{"<-", func(target *Mut, v Value) (Value, error) {
+	{"<-", func(target *Mut, v value.Value) (value.Value, error) {
 		target.v = v
 		return unit, nil
 	}},
-	{"=", func(env *environment, assignee Atom, v Value) (*environment, Value, error) {
+	{"=", func(env *environment, assignee Atom, v value.Value) (*environment, value.Value, error) {
 		next, ok := env.insert(assignee, v)
 		if !ok {
 			return nil, nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
 		}
 		return next, unit, nil
 	}},
-	{"==", func(x, y Value) (Value, error) {
+	{"==", func(x, y value.Value) (value.Value, error) {
 		return Bool(x.Eq(y)), nil
 	}},
-	{"!=", func(x, y Value) (Value, error) {
+	{"!=", func(x, y value.Value) (value.Value, error) {
 		return Bool(!x.Eq(y)), nil
 	}},
-	{">=", func(x, y *Number) (Value, error) {
-		return Bool(x.Cmp(&y.Rat) >= 0), nil
+	{">=", func(x, y number.Number) (value.Value, error) {
+		return Bool(x.Cmp(y) >= 0), nil
 	}},
-	{"not", func(b Bool) (Value, error) {
+	{"not", func(b Bool) (value.Value, error) {
 		return !b, nil
 	}},
-	{"+", func(x, y *Number) (Value, error) {
-		var z big.Rat
-		z.Add(&x.Rat, &y.Rat)
-		return &Number{z}, nil
+	{"+", func(x, y number.Number) (value.Value, error) {
+		return x.Add(y), nil
 	}},
-	{"-", func(x, y *Number) (Value, error) {
-		var z big.Rat
-		z.Sub(&x.Rat, &y.Rat)
-		return &Number{z}, nil
+	{"-", func(x, y number.Number) (value.Value, error) {
+		return x.Sub(y), nil
 	}},
-	{"neg", func(x *Number) (Value, error) {
-		var z big.Rat
-		z.Neg(&x.Rat)
-		return &Number{z}, nil
+	{"neg", func(x number.Number) (value.Value, error) {
+		return x.Neg(), nil
 	}},
-	{"*", func(x, y *Number) (Value, error) {
-		var z big.Rat
-		z.Mul(&x.Rat, &y.Rat)
-		return &Number{z}, nil
+	{"*", func(x, y number.Number) (value.Value, error) {
+		return x.Mul(y), nil
 	}},
-	{"/", func(x, y *Number) (Value, error) {
-		var zero big.Rat
-		if y.Cmp(&zero) == 0 {
-			return nil, errors.New("denominator is zero")
-		}
-
-		var z big.Rat
-		z.Quo(&x.Rat, &y.Rat)
-		return &Number{z}, nil
+	{"/", func(x, y number.Number) (value.Value, error) {
+		return x.Div(y)
 	}},
-	{"%%", func(x, y *Number) (Value, error) {
-		if !x.IsInt() {
-			return nil, fmt.Errorf(
-				"%s is not an integer",
-				x.RatString(),
-			)
-		}
-		if !y.IsInt() {
-			return nil, fmt.Errorf(
-				"%s is not an integer",
-				y.RatString(),
-			)
-		}
-		if y.Num().IsInt64() && y.Num().Int64() == 0 {
-			return nil, errors.New("denominator is zero")
-		}
-
-		var z big.Int
-		z.Rem(x.Num(), y.Num())
-		var r big.Rat
-		r.SetInt(&z)
-		return &Number{r}, nil
+	{"%%", func(x, y number.Number) (value.Value, error) {
+		return x.Mod(y)
 	}},
-	{"->", func(def List, block Block) (Value, error) {
+	{"->", func(def List, block Block) (value.Value, error) {
 		atoms := make([]Atom, len(def.data))
 		for i, v := range def.data {
 			atom, ok := v.(Atom)
@@ -121,7 +87,7 @@ var builtinBlocks = []struct {
 			return nil, fmt.Errorf("can't create argumented block from other than basic block")
 		}
 	}},
-	{"defop", func(env *environment, symbol String, lhs, rhs Atom, block Block) (*environment, Value, error) {
+	{"defop", func(env *environment, symbol String, lhs, rhs Atom, block Block) (*environment, value.Value, error) {
 		// TODO: check symbol is valid operator
 
 		var blockV Block
@@ -145,7 +111,7 @@ var builtinBlocks = []struct {
 		}
 		return next, unit, nil
 	}},
-	{"if", func(cond Value, tBlock Block, blocks ...Block) (Value, error) {
+	{"if", func(cond value.Value, tBlock Block, blocks ...Block) (value.Value, error) {
 		var fBlock Block
 		hasFBlock := false
 		switch len(blocks) {
@@ -167,7 +133,7 @@ var builtinBlocks = []struct {
 		}
 		return tBlock.runWithoutEnv()
 	}},
-	{"loop", func(block Block) (Value, error) {
+	{"loop", func(block Block) (value.Value, error) {
 		for {
 			v, err := block.runWithoutEnv()
 			if err != nil {
@@ -178,47 +144,43 @@ var builtinBlocks = []struct {
 			}
 		}
 	}},
-	{"@", func(l List, num *Number) (Value, error) {
-		var zero big.Int
-		if !num.IsInt() || num.Num().Cmp(&zero) < 0 {
-			return nil, fmt.Errorf("%s is not an unsigned integer", num.String())
+	{"@", func(l List, idx number.Number) (value.Value, error) {
+		i, err := idx.Unsigned()
+		if err != nil {
+			return nil, err
 		}
-		idx64 := num.Num().Int64()
-		idx := int(idx64)
-		if !num.Num().IsInt64() || int64(idx) != idx64 || idx >= len(l.data) {
+		if i >= len(l.data) {
 			return nil, fmt.Errorf(
 				"index out of range (%s with length %d)",
-				num,
+				idx,
 				len(l.data),
 			)
 		}
-		return l.data[idx], nil
+		return l.data[i], nil
 	}},
-	{"len", func(l List) (Value, error) {
-		var r big.Rat
-		r.SetInt64(int64(len(l.data)))
-		return &Number{r}, nil
+	{"len", func(l List) (value.Value, error) {
+		return number.FromInt(len(l.data)), nil
 	}},
-	{"append", func(l List, v Value) (Value, error) {
-		next := make([]Value, len(l.data)+1)
+	{"append", func(l List, v value.Value) (value.Value, error) {
+		next := make([]value.Value, len(l.data)+1)
 		copy(next, l.data)
 		next[len(next)-1] = v
 		return List{next}, nil
 	}},
-	{"append_list", func(l, l2 List) (Value, error) {
+	{"append_list", func(l, l2 List) (value.Value, error) {
 		// TODO: if a list is empty, don't copy
-		next := make([]Value, len(l.data)+len(l2.data))
+		next := make([]value.Value, len(l.data)+len(l2.data))
 		n := copy(next, l.data)
 		copy(next[n:], l2.data)
 		return List{next}, nil
 
 	}},
-	{"slice", func(l List, fromN, toN *Number) (Value, error) {
-		from, err := fromN.asUnsigned()
+	{"slice", func(l List, fromN, toN number.Number) (value.Value, error) {
+		from, err := fromN.Unsigned()
 		if err != nil {
 			return nil, fmt.Errorf("from is not valid, %w", err)
 		}
-		to, err := toN.asUnsigned()
+		to, err := toN.Unsigned()
 		if err != nil {
 			return nil, fmt.Errorf("to is not valid, %w", err)
 		}
@@ -238,10 +200,10 @@ var builtinBlocks = []struct {
 		}
 		return List{l.data[from:to]}, nil
 	}},
-	{"call", func(b Block, args List) (Value, error) {
+	{"call", func(b Block, args List) (value.Value, error) {
 		return b.runWithoutEnv(args.data...)
 	}},
-	{"println", func(args ...Value) (Value, error) {
+	{"println", func(args ...value.Value) (value.Value, error) {
 		for i, v := range args {
 			_, err := fmt.Print(v.String())
 			if err != nil {
