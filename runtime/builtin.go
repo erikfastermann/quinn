@@ -1,20 +1,254 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/erikfastermann/quinn/number"
 	"github.com/erikfastermann/quinn/value"
 )
 
+var (
+	tagStringer = value.NewTag()
+	tagEq       = value.NewTag()
+)
+
+var (
+	stringUnit          value.Value = String("()")
+	stringFalse         value.Value = String("false")
+	stringTrue          value.Value = String("true")
+	stringEmptyList     value.Value = String("[]")
+	stringIterationStop value.Value = String("<iteration stop>")
+	stringBlock         value.Value = String("<block>")
+)
+
+func eqUnit(_ Unit, v value.Value) (value.Value, error) {
+	_, ok := v.(Unit)
+	return NewBool(ok), nil
+}
+
+func stringerUnit(_ Unit) (value.Value, error) {
+	return stringUnit, nil
+}
+
+func eqBool(b Bool, v value.Value) (value.Value, error) {
+	b2, ok := v.(Bool)
+	return NewBool(ok && b.AsBool() == b2.AsBool()), nil
+}
+
+func stringerBool(b Bool) (value.Value, error) {
+	if b.AsBool() {
+		return stringTrue, nil
+	}
+	return stringFalse, nil
+}
+
+func eqNumber(n number.Number, v value.Value) (value.Value, error) {
+	n2, ok := v.(number.Number)
+	return NewBool(ok && n.Eq(n2)), nil
+}
+
+func stringerNumber(n number.Number) (value.Value, error) {
+	return String(n.String()), nil
+}
+
+func eqString(s String, v value.Value) (value.Value, error) {
+	s2, ok := v.(String)
+	return NewBool(ok && s == s2), nil
+}
+
+func stringerString(s String) (value.Value, error) {
+	return s, nil
+}
+
+func eqAtom(a Atom, v value.Value) (value.Value, error) {
+	a2, ok := v.(Atom)
+	return NewBool(ok && a == a2), nil
+}
+
+func stringerAtom(a Atom) (value.Value, error) {
+	return String(string(a)), nil
+}
+
+func eqList(l List, v value.Value) (value.Value, error) {
+	l2, ok := v.(List)
+	if !ok || len(l.data) != len(l2.data) {
+		return falseValue, nil
+	}
+	for i := range l.data {
+		// TODO: check cycle?
+		bV, err := eq(l.data[i], l2.data[i])
+		if err != nil {
+			return nil, err
+		}
+		b, ok := bV.(Bool)
+		if !ok {
+			return nil, fmt.Errorf("list equal: expected bool, got %s", valueString(bV))
+		}
+		if !b.AsBool() {
+			return falseValue, nil
+		}
+	}
+	return trueValue, nil
+}
+
+func stringerList(l List) (value.Value, error) {
+	// TODO: check cycle?
+
+	if len(l.data) == 0 {
+		return stringEmptyList, nil
+	}
+
+	var b strings.Builder
+	b.WriteString("[")
+	for _, v := range l.data[:len(l.data)-1] {
+		b.WriteString(valueString(v))
+		b.WriteString(" ")
+	}
+	b.WriteString(valueString(l.data[len(l.data)-1]))
+	b.WriteString("]")
+	return String(b.String()), nil
+}
+
+func eqIterationStop(_ IterationStop, v value.Value) (value.Value, error) {
+	_, ok := v.(IterationStop)
+	return NewBool(ok), nil
+}
+
+func stringerIterationStop(_ IterationStop) (value.Value, error) {
+	return stringIterationStop, nil
+}
+
+func eqMut(m *Mut, v value.Value) (value.Value, error) {
+	m2, ok := v.(*Mut)
+	if !ok {
+		return falseValue, nil
+	}
+	// TODO: check cycle?
+	return eq(m.v, m2.v)
+}
+
+func stringerMut(m *Mut) (value.Value, error) {
+	return String(fmt.Sprintf("(mut %s)", valueString(m.v))), nil
+}
+
+func eqBlock(_ Block, _ value.Value) (value.Value, error) {
+	return falseValue, nil
+}
+
+func stringerBlock(_ Block) (value.Value, error) {
+	return stringBlock, nil
+}
+
+var tagValues map[value.Tag]map[value.Tag]value.Value = nil
+
+func init() {
+	// needed to avoid init loop
+	tagValues = map[value.Tag]map[value.Tag]value.Value{
+		tagUnit: {
+			tagEq:       newBlockMust(eqUnit),
+			tagStringer: newBlockMust(stringerUnit),
+		},
+		tagBool: {
+			tagEq:       newBlockMust(eqBool),
+			tagStringer: newBlockMust(stringerBool),
+		},
+		number.Tag(): {
+			tagEq:       newBlockMust(eqNumber),
+			tagStringer: newBlockMust(stringerNumber),
+		},
+		tagString: {
+			tagEq:       newBlockMust(eqString),
+			tagStringer: newBlockMust(stringerString),
+		},
+		tagAtom: {
+			tagEq:       newBlockMust(eqAtom),
+			tagStringer: newBlockMust(stringerAtom),
+		},
+		tagList: {
+			tagEq:       newBlockMust(eqList),
+			tagStringer: newBlockMust(stringerList),
+		},
+		tagIterationStop: {
+			tagEq:       newBlockMust(eqIterationStop),
+			tagStringer: newBlockMust(stringerIterationStop),
+		},
+		tagMut: {
+			tagEq:       newBlockMust(eqMut),
+			tagStringer: newBlockMust(stringerMut),
+		},
+		tagBlock: {
+			tagEq:       newBlockMust(eqBlock),
+			tagStringer: newBlockMust(stringerBlock),
+		},
+	}
+}
+
+func valueString(v value.Value) string {
+	// should we also recover panics?
+	// should we try to string until cycle?
+
+	if v == nil {
+		return "<unknown (value is nil)>"
+	}
+	attr, ok := tagValues[v.Tag()]
+	if !ok {
+		return fmt.Sprintf("<%T (error: tag not found)>", v)
+	}
+	stringer, ok := attr[tagStringer]
+	if !ok {
+		return fmt.Sprintf("<%T (error: no stringer attribute)", v)
+	}
+	b, ok := stringer.(Block)
+	if !ok {
+		return fmt.Sprintf(
+			"<%T (error: stringer attribute is not a block, but a %T)",
+			v,
+			stringer,
+		)
+	}
+	sV, err := b.runWithoutEnv(v)
+	if err != nil {
+		return fmt.Sprintf("<%T (stringer error: %v)", v, err)
+	}
+	s, ok := sV.(String)
+	if !ok {
+		return fmt.Sprintf(
+			"<%T (error: stringer returned non string value (%T))",
+			v,
+			sV,
+		)
+	}
+	return string(s)
+}
+
+func eq(x, y value.Value) (value.Value, error) {
+	attr, ok := tagValues[x.Tag()]
+	if !ok {
+		return nil, fmt.Errorf("can't compare %s: tag not found", valueString(x))
+	}
+	eq, ok := attr[tagEq]
+	if !ok {
+		return nil, fmt.Errorf("can't compare %s: no eq attribute", valueString(x))
+	}
+	b, ok := eq.(Block)
+	if !ok {
+		return nil, fmt.Errorf("can't compare %s: eq is not a Block", valueString(x))
+	}
+	return b.runWithoutEnv(x, y)
+}
+
 var builtinOther = []struct {
 	name  Atom
 	value value.Value
 }{
-	{"false", Bool(false)},
-	{"true", Bool(true)},
+	{"false", falseValue},
+	{"true", trueValue},
 	{"stop", IterationStop{}},
 }
+
+var errNonBasicArgBlock = errors.New("can't create argumented block from non basic block")
 
 var builtinBlocks = []struct {
 	name Atom
@@ -33,21 +267,35 @@ var builtinBlocks = []struct {
 	{"=", func(env *environment, assignee Atom, v value.Value) (*environment, value.Value, error) {
 		next, ok := env.insert(assignee, v)
 		if !ok {
-			return nil, nil, fmt.Errorf("couldn't assign to name, %s already exists", assignee)
+			return nil, nil, fmt.Errorf(
+				"couldn't assign to name, %s already exists",
+				valueString(assignee),
+			)
 		}
 		return next, unit, nil
 	}},
 	{"==", func(x, y value.Value) (value.Value, error) {
-		return Bool(x.Eq(y)), nil
+		return eq(x, y)
 	}},
 	{"!=", func(x, y value.Value) (value.Value, error) {
-		return Bool(!x.Eq(y)), nil
+		bV, err := eq(x, y)
+		if err != nil {
+			return nil, err
+		}
+		b, ok := bV.(Bool)
+		if !ok {
+			return nil, fmt.Errorf(
+				"can't negate non bool value %s",
+				valueString(bV),
+			)
+		}
+		return NewBool(!b.AsBool()), nil
 	}},
 	{">=", func(x, y number.Number) (value.Value, error) {
-		return Bool(x.Cmp(y) >= 0), nil
+		return NewBool(x.Cmp(y) >= 0), nil
 	}},
 	{"not", func(b Bool) (value.Value, error) {
-		return !b, nil
+		return NewBool(!b.AsBool()), nil
 	}},
 	{"+", func(x, y number.Number) (value.Value, error) {
 		return x.Add(y), nil
@@ -72,7 +320,7 @@ var builtinBlocks = []struct {
 		for i, v := range def.data {
 			atom, ok := v.(Atom)
 			if !ok {
-				return v, fmt.Errorf("argument has to be atom, got %s", v)
+				return v, fmt.Errorf("argument has to be atom, got %s", valueString(v))
 			}
 			atoms[i] = atom
 		}
@@ -84,7 +332,7 @@ var builtinBlocks = []struct {
 			}
 			return block, nil
 		default:
-			return nil, fmt.Errorf("can't create argumented block from other than basic block")
+			return nil, errNonBasicArgBlock
 		}
 	}},
 	{"defop", func(env *environment, symbol String, lhs, rhs Atom, block Block) (*environment, value.Value, error) {
@@ -99,14 +347,14 @@ var builtinBlocks = []struct {
 				return nil, nil, err
 			}
 		default:
-			return nil, nil, fmt.Errorf("can't create argumented block from other than basic block")
+			return nil, nil, errNonBasicArgBlock
 		}
 
 		next, ok := env.insert(Atom(symbol), blockV)
 		if !ok {
 			return nil, nil, fmt.Errorf(
 				"couldn't assign to name, %s already exists",
-				symbol.String(),
+				valueString(symbol),
 			)
 		}
 		return next, unit, nil
@@ -124,7 +372,7 @@ var builtinBlocks = []struct {
 		}
 
 		_, isUnit := cond.(Unit)
-		if b, isBool := cond.(Bool); (isBool && !bool(b)) || isUnit {
+		if b, isBool := cond.(Bool); (isBool && !b.AsBool()) || isUnit {
 			if hasFBlock {
 				return fBlock.runWithoutEnv()
 			} else {
@@ -151,8 +399,8 @@ var builtinBlocks = []struct {
 		}
 		if i >= len(l.data) {
 			return nil, fmt.Errorf(
-				"index out of range (%s with length %d)",
-				idx,
+				"index out of range (%d with length %d)",
+				i,
 				len(l.data),
 			)
 		}
@@ -204,16 +452,17 @@ var builtinBlocks = []struct {
 		return b.runWithoutEnv(args.data...)
 	}},
 	{"println", func(args ...value.Value) (value.Value, error) {
-		for i, v := range args {
-			_, err := fmt.Print(v.String())
-			if err != nil {
+		if len(args) == 0 {
+			return unit, nil
+		}
+		for _, v := range args[:len(args)-1] {
+			if _, err := fmt.Print(valueString(v), " "); err != nil {
 				return nil, err
 			}
-			if i < len(args)-1 {
-				fmt.Print(" ")
-			}
 		}
-		fmt.Println()
+		if _, err := fmt.Println(valueString(args[len(args)-1])); err != nil {
+			return nil, err
+		}
 		return unit, nil
 	}},
 }
@@ -223,11 +472,10 @@ var envWithBuiltins *environment = nil
 func init() {
 	var ok bool
 	for _, builtin := range builtinBlocks {
-		b, err := newBlockFromFn(builtin.fn)
-		if err != nil {
-			panic(internal + ": " + err.Error())
-		}
-		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, b)
+		envWithBuiltins, ok = envWithBuiltins.insert(
+			builtin.name,
+			newBlockMust(builtin.fn),
+		)
 		if !ok {
 			panic(internal)
 		}

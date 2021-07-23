@@ -1,6 +1,27 @@
 package value
 
+import "sync/atomic"
+
 type Value interface {
-	Eq(Value) bool
-	String() string
+	Tag() Tag
+}
+
+type Tag struct{ id int64 }
+
+var tagIndex = int64(0)
+
+func NewTag() Tag {
+	id := atomic.AddInt64(&tagIndex, 1)
+	if id < 0 {
+		panic("overflow")
+	}
+	return Tag{id}
+}
+
+func (t Tag) Valid() bool {
+	return t.id != 0
+}
+
+func (t Tag) Tag() Tag {
+	return t
 }

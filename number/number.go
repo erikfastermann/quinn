@@ -8,6 +8,12 @@ import (
 	"github.com/erikfastermann/quinn/value"
 )
 
+var tag = value.NewTag()
+
+func Tag() value.Tag {
+	return tag
+}
+
 type Number struct {
 	r big.Rat
 }
@@ -25,6 +31,10 @@ func FromString(s string) (Number, error) {
 		return Number{}, fmt.Errorf("%q is not a valid number")
 	}
 	return Number{r}, nil
+}
+
+func (x Number) Tag() value.Tag {
+	return tag
 }
 
 func (x Number) Eq(v value.Value) bool {

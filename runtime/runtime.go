@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strconv"
-	"strings"
 
 	"github.com/erikfastermann/quinn/number"
 	"github.com/erikfastermann/quinn/parser"
@@ -19,55 +17,61 @@ import (
 //	Value.Type
 //	return nil everywhere if error
 
+var (
+	tagUnit          = value.NewTag()
+	tagBool          = value.NewTag()
+	tagString        = value.NewTag()
+	tagAtom          = value.NewTag()
+	tagList          = value.NewTag()
+	tagIterationStop = value.NewTag()
+	tagMut           = value.NewTag()
+	tagBlock         = value.NewTag()
+)
+
 const internal = "internal error"
 
 type Unit struct{}
 
-func (Unit) Eq(v value.Value) bool {
-	_, isUnit := v.(Unit)
-	return isUnit
-}
-
-func (Unit) String() string {
-	return "()"
-}
-
 var unit value.Value = Unit{}
 
-type Bool bool
-
-func (b Bool) Eq(v value.Value) bool {
-	b2, ok := v.(Bool)
-	return ok && b == b2
+func (Unit) Tag() value.Tag {
+	return tagUnit
 }
 
-func (b Bool) String() string {
+type Bool struct {
+	b bool
+}
+
+var (
+	falseValue value.Value = Bool{false}
+	trueValue  value.Value = Bool{true}
+)
+
+func NewBool(b bool) value.Value {
 	if b {
-		return "true"
+		return trueValue
 	}
-	return "false"
+	return falseValue
+}
+
+func (Bool) Tag() value.Tag {
+	return tagBool
+}
+
+func (b Bool) AsBool() bool {
+	return b.b
 }
 
 type String string
 
-func (s String) Eq(v value.Value) bool {
-	s2, ok := v.(String)
-	return ok && s == s2
-}
-
-func (s String) String() string {
-	return strconv.Quote(string(s))
+func (String) Tag() value.Tag {
+	return tagString
 }
 
 type Atom string
 
-func (a Atom) Eq(v value.Value) bool {
-	a2, ok := v.(Atom)
-	return ok && a == a2
-}
-
-func (a Atom) String() string {
-	return string(a)
+func (Atom) Tag() value.Tag {
+	return tagAtom
 }
 
 type List struct {
@@ -75,68 +79,23 @@ type List struct {
 	data []value.Value
 }
 
-func (l List) Eq(v value.Value) bool {
-	l2, ok := v.(List)
-	if !ok || len(l.data) != len(l2.data) {
-		return false
-	}
-	for i := range l.data {
-		if !l.data[i].Eq(l2.data[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func (l List) String() string {
-	var b strings.Builder
-	b.WriteString("[")
-	for i, v := range l.data {
-		b.WriteString(v.String())
-		if i < len(l.data)-1 {
-			b.WriteString(" ")
-		}
-	}
-	b.WriteString("]")
-	return b.String()
+func (List) Tag() value.Tag {
+	return tagList
 }
 
 // TODO: implement and use exceptions instead
 type IterationStop struct{}
 
-func (IterationStop) Eq(v value.Value) bool {
-	_, ok := v.(IterationStop)
-	return ok
+func (IterationStop) Tag() value.Tag {
+	return tagIterationStop
 }
-
-func (IterationStop) String() string {
-	return "iteration stop"
-}
-
-// TODO:
-// type Exception struct {
-// 	Err value.Value
-// }
-
-// func (e Exceprion) Eq(v value.Value) bool {
-// 	e2, ok := v.(Exception)
-// 	return ok && e.Err.Eq(e2.Err)
-// }
-
-// func (e Excepion) String() string {
-// 	return fmt.Sprintf("(exception %s)", e.Err)
-// }
 
 type Mut struct {
 	v value.Value
 }
 
-func (*Mut) Eq(_ value.Value) bool {
-	return false
-}
-
-func (m *Mut) String() string {
-	return fmt.Sprintf("(mut %s)", m.v)
+func (*Mut) Tag() value.Tag {
+	return tagMut
 }
 
 type Block interface {
@@ -145,19 +104,13 @@ type Block interface {
 	runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error)
 }
 
-const blockString = "<block>"
-
 type basicBlock struct {
 	env  *environment
 	code parser.Block
 }
 
-func (basicBlock) Eq(_ value.Value) bool {
-	return false
-}
-
-func (basicBlock) String() string {
-	return blockString
+func (basicBlock) Tag() value.Tag {
+	return tagBlock
 }
 
 func (b basicBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
@@ -176,7 +129,7 @@ func runCode(env *environment, code parser.Block, args ...value.Value) (value.Va
 		if _, isUnit := args[0].(Unit); !isUnit {
 			return nil, fmt.Errorf(
 				"first argument in call to basic block must be unit, not %s",
-				args[0],
+				valueString(args[0]),
 			)
 		}
 	default:
@@ -197,7 +150,10 @@ func runCode(env *environment, code parser.Block, args ...value.Value) (value.Va
 			return v, nil
 		} else {
 			if _, ok := v.(Unit); !ok {
-				return nil, fmt.Errorf("non unit value %s in other than last group of block", v)
+				return nil, fmt.Errorf(
+					"non unit value %s in other than last group of block",
+					valueString(v),
+				)
 			}
 		}
 	}
@@ -208,9 +164,8 @@ func (b basicBlock) withArgs(argNames ...Atom) (Block, error) {
 	for _, a := range argNames {
 		if _, ok := b.env.get(a); ok {
 			return nil, fmt.Errorf(
-				"can't use %s as an argument, "+
-					"already exists in the environment",
-				a,
+				"can't use %s as an argument, already exists in the environment",
+				valueString(a),
 			)
 		}
 	}
@@ -223,12 +178,8 @@ type argBlock struct {
 	code     parser.Block
 }
 
-func (argBlock) Eq(_ value.Value) bool {
-	return false
-}
-
-func (argBlock) String() string {
-	return blockString
+func (argBlock) Tag() value.Tag {
+	return tagBlock
 }
 
 func (b argBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
@@ -261,7 +212,15 @@ var (
 	typePtrEnvironment = reflect.TypeOf((*environment)(nil))
 )
 
-func newBlockFromFn(fn interface{}) (Block, error) {
+func newBlockMust(fn interface{}) Block {
+	b, err := NewBlock(fn)
+	if err != nil {
+		panic(internal + ": " + err.Error())
+	}
+	return b
+}
+
+func NewBlock(fn interface{}) (Block, error) {
 	t := reflect.TypeOf(fn)
 	if t.Kind() != reflect.Func {
 		return nil, fmt.Errorf("expected func, got %T", fn)
@@ -341,12 +300,8 @@ type fnBlockWithoutEnv struct {
 	fn    interface{}
 }
 
-func (fnBlockWithoutEnv) Eq(_ value.Value) bool {
-	return false
-}
-
-func (fnBlockWithoutEnv) String() string {
-	return blockString
+func (fnBlockWithoutEnv) Tag() value.Tag {
+	return tagBlock
 }
 
 func (b fnBlockWithoutEnv) runWithoutEnv(args ...value.Value) (value.Value, error) {
@@ -394,12 +349,8 @@ type fnBlockWithEnv struct {
 	fn    interface{}
 }
 
-func (fnBlockWithEnv) Eq(_ value.Value) bool {
-	return false
-}
-
-func (fnBlockWithEnv) String() string {
-	return blockString
+func (fnBlockWithEnv) Tag() value.Tag {
+	return tagBlock
 }
 
 func (b fnBlockWithEnv) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
@@ -464,7 +415,7 @@ func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflec
 			return fmt.Errorf(
 				"argument error: expected %s, got %s",
 				t.String(),
-				arg.String(),
+				valueString(arg),
 			)
 		}
 		in[i] = v.Convert(t)
@@ -486,7 +437,7 @@ func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflec
 				return fmt.Errorf(
 					"argument error: expected %s, got %s",
 					to.String(),
-					vv.String(),
+					valueString(vv),
 				)
 			}
 			s.Index(i).Set(v.Convert(to))
@@ -543,7 +494,7 @@ func evalGroup(env *environment, group parser.Group) (*environment, value.Value,
 			if !ok {
 				return nil, nil, fmt.Errorf(
 					"can't call value %s, not a block",
-					blockV,
+					valueString(blockV),
 				)
 			}
 			return block.runWithEnv(env, args...)
@@ -554,14 +505,14 @@ func evalGroup(env *environment, group parser.Group) (*environment, value.Value,
 
 		nameV, ok := env.get(name)
 		if !ok {
-			return nil, nil, fmt.Errorf("name %s not found", name)
+			return nil, nil, fmt.Errorf("name %s not found", valueString(name))
 		}
 		block, ok := nameV.(Block)
 		if !ok {
 			return nil, nil, fmt.Errorf(
 				"name %s is not a block, but a %s value instead",
-				name,
-				nameV.String(),
+				valueString(name),
+				valueString(nameV),
 			)
 		}
 		return block.runWithEnv(env, args...)
@@ -603,7 +554,7 @@ func evalElement(env *environment, element parser.Element) (*environment, value.
 			return nil, nil, fmt.Errorf(
 				"operator %s is not a block, but a %s value instead",
 				v.Symbol,
-				symbolV,
+				valueString(symbolV),
 			)
 		}
 		return block.runWithEnv(env, lhsV, rhsV)
@@ -695,7 +646,7 @@ func (env *environment) stringRec() string {
 		str += " "
 	}
 
-	str += fmt.Sprintf("[%s %v]", env.key, env.value)
+	str += fmt.Sprintf("[%s %s]", env.key, valueString(env.value))
 
 	right := env.right.stringRec()
 	if len(right) > 0 {
@@ -712,7 +663,10 @@ func Run(block parser.Block) error {
 		return err
 	}
 	if _, isUnit := v.(Unit); !isUnit {
-		return fmt.Errorf("last group in root block evaluates to %s, not unit", v)
+		return fmt.Errorf(
+			"last group in root block evaluates to %s, not unit",
+			valueString(v),
+		)
 	}
 	return nil
 }
