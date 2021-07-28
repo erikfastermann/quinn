@@ -18,14 +18,15 @@ import (
 //	return nil everywhere if error
 
 var (
-	tagUnit          = value.NewTag()
-	tagBool          = value.NewTag()
-	tagString        = value.NewTag()
-	tagAtom          = value.NewTag()
-	tagList          = value.NewTag()
-	tagIterationStop = value.NewTag()
-	tagMut           = value.NewTag()
-	tagBlock         = value.NewTag()
+	tagUnit   = value.NewTag()
+	tagBool   = value.NewTag()
+	tagString = value.NewTag()
+	tagAtom   = value.NewTag()
+	tagList   = value.NewTag()
+	tagMut    = value.NewTag()
+	tagOpaque = value.NewTag()
+	tagBlock  = value.NewTag()
+	tagTag    = value.Tag{}.Tag()
 )
 
 const internal = "internal error"
@@ -83,19 +84,31 @@ func (List) Tag() value.Tag {
 	return tagList
 }
 
-// TODO: implement and use exceptions instead
-type IterationStop struct{}
-
-func (IterationStop) Tag() value.Tag {
-	return tagIterationStop
-}
-
 type Mut struct {
 	v value.Value
 }
 
 func (*Mut) Tag() value.Tag {
 	return tagMut
+}
+
+type Opaque struct {
+	tag   value.Tag
+	v     value.Value
+	attrs map[value.Tag]value.Value
+}
+
+func (o Opaque) Tag() value.Tag {
+	return tagOpaque
+}
+
+func opaqueMatcher(v value.Value, tag value.Tag) (value.Value, bool) {
+	o, ok := v.(Opaque)
+	if !ok {
+		return nil, false
+	}
+	attr, ok := o.attrs[tag]
+	return attr, ok
 }
 
 type Block interface {

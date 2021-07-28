@@ -1,3 +1,8 @@
+tagStop = newTag ()
+stopEq = ([x y] -> { (opaqueTag x) == (default {opaqueTag y} ()) })
+stopStringer = ([_] -> { "stop" })
+stop = opaque () tagStop [tagEq stopEq] [tagStringer stopStringer]
+
 lit = ([list] -> {
 	{
 		i = mut 0

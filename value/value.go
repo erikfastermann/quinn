@@ -22,6 +22,8 @@ func (t Tag) Valid() bool {
 	return t.id != 0
 }
 
+var tagTag = NewTag()
+
 func (t Tag) Tag() Tag {
-	return t
+	return tagTag
 }

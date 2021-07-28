@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/erikfastermann/quinn/number"
@@ -15,12 +16,12 @@ var (
 )
 
 var (
-	stringUnit          value.Value = String("()")
-	stringFalse         value.Value = String("false")
-	stringTrue          value.Value = String("true")
-	stringEmptyList     value.Value = String("[]")
-	stringIterationStop value.Value = String("<iteration stop>")
-	stringBlock         value.Value = String("<block>")
+	stringUnit      value.Value = String("()")
+	stringFalse     value.Value = String("false")
+	stringTrue      value.Value = String("true")
+	stringEmptyList value.Value = String("[]")
+	stringBlock     value.Value = String("<block>")
+	stringTag       value.Value = String("tag")
 )
 
 func eqUnit(_ Unit, v value.Value) (value.Value, error) {
@@ -59,7 +60,7 @@ func eqString(s String, v value.Value) (value.Value, error) {
 }
 
 func stringerString(s String) (value.Value, error) {
-	return s, nil
+	return String(strconv.Quote(string(s))), nil
 }
 
 func eqAtom(a Atom, v value.Value) (value.Value, error) {
@@ -111,15 +112,7 @@ func stringerList(l List) (value.Value, error) {
 	return String(b.String()), nil
 }
 
-func eqIterationStop(_ IterationStop, v value.Value) (value.Value, error) {
-	_, ok := v.(IterationStop)
-	return NewBool(ok), nil
-}
-
-func stringerIterationStop(_ IterationStop) (value.Value, error) {
-	return stringIterationStop, nil
-}
-
+// TODO: should Mut implement eq?
 func eqMut(m *Mut, v value.Value) (value.Value, error) {
 	m2, ok := v.(*Mut)
 	if !ok {
@@ -133,55 +126,58 @@ func stringerMut(m *Mut) (value.Value, error) {
 	return String(fmt.Sprintf("(mut %s)", valueString(m.v))), nil
 }
 
-func eqBlock(_ Block, _ value.Value) (value.Value, error) {
-	return falseValue, nil
-}
-
 func stringerBlock(_ Block) (value.Value, error) {
 	return stringBlock, nil
 }
 
-var tagValues map[value.Tag]map[value.Tag]value.Value = nil
+func eqTag(t value.Tag, v value.Value) (value.Value, error) {
+	t2, ok := v.(value.Tag)
+	return NewBool(ok && t == t2), nil
+}
+
+func stringerTag(_ value.Tag) (value.Value, error) {
+	return stringTag, nil
+}
+
+func newTagMatcher(tagFuncPairs ...interface{}) func(value.Value, value.Tag) (value.Value, bool) {
+	if len(tagFuncPairs)%2 != 0 {
+		panic(internal)
+	}
+
+	m := make(map[value.Tag]value.Value)
+	for i := 0; i < len(tagFuncPairs); i += 2 {
+		tag, ok := tagFuncPairs[i].(value.Tag)
+		if !ok {
+			panic(internal)
+		}
+		fn := tagFuncPairs[i+1]
+		if _, ok := m[tag]; ok {
+			panic(internal)
+		}
+		m[tag] = newBlockMust(fn)
+	}
+
+	return func(_ value.Value, tag value.Tag) (value.Value, bool) {
+		v, ok := m[tag]
+		return v, ok
+	}
+}
+
+var tagValues map[value.Tag]func(value.Value, value.Tag) (v value.Value, ok bool)
 
 func init() {
 	// needed to avoid init loop
-	tagValues = map[value.Tag]map[value.Tag]value.Value{
-		tagUnit: {
-			tagEq:       newBlockMust(eqUnit),
-			tagStringer: newBlockMust(stringerUnit),
-		},
-		tagBool: {
-			tagEq:       newBlockMust(eqBool),
-			tagStringer: newBlockMust(stringerBool),
-		},
-		number.Tag(): {
-			tagEq:       newBlockMust(eqNumber),
-			tagStringer: newBlockMust(stringerNumber),
-		},
-		tagString: {
-			tagEq:       newBlockMust(eqString),
-			tagStringer: newBlockMust(stringerString),
-		},
-		tagAtom: {
-			tagEq:       newBlockMust(eqAtom),
-			tagStringer: newBlockMust(stringerAtom),
-		},
-		tagList: {
-			tagEq:       newBlockMust(eqList),
-			tagStringer: newBlockMust(stringerList),
-		},
-		tagIterationStop: {
-			tagEq:       newBlockMust(eqIterationStop),
-			tagStringer: newBlockMust(stringerIterationStop),
-		},
-		tagMut: {
-			tagEq:       newBlockMust(eqMut),
-			tagStringer: newBlockMust(stringerMut),
-		},
-		tagBlock: {
-			tagEq:       newBlockMust(eqBlock),
-			tagStringer: newBlockMust(stringerBlock),
-		},
+	tagValues = map[value.Tag]func(value.Value, value.Tag) (value.Value, bool){
+		tagUnit:      newTagMatcher(tagEq, eqUnit, tagStringer, stringerUnit),
+		tagBool:      newTagMatcher(tagEq, eqBool, tagStringer, stringerBool),
+		number.Tag(): newTagMatcher(tagEq, eqNumber, tagStringer, stringerNumber),
+		tagString:    newTagMatcher(tagEq, eqString, tagStringer, stringerString),
+		tagAtom:      newTagMatcher(tagEq, eqAtom, tagStringer, stringerAtom),
+		tagList:      newTagMatcher(tagEq, eqList, tagStringer, stringerList),
+		tagMut:       newTagMatcher(tagEq, eqMut, tagStringer, stringerMut),
+		tagBlock:     newTagMatcher(tagStringer, stringerBlock),
+		tagTag:       newTagMatcher(tagEq, eqTag, tagStringer, stringerTag),
+		tagOpaque:    opaqueMatcher,
 	}
 }
 
@@ -192,11 +188,11 @@ func valueString(v value.Value) string {
 	if v == nil {
 		return "<unknown (value is nil)>"
 	}
-	attr, ok := tagValues[v.Tag()]
+	attrs, ok := tagValues[v.Tag()]
 	if !ok {
 		return fmt.Sprintf("<%T (error: tag not found)>", v)
 	}
-	stringer, ok := attr[tagStringer]
+	stringer, ok := attrs(v, tagStringer)
 	if !ok {
 		return fmt.Sprintf("<%T (error: no stringer attribute)", v)
 	}
@@ -224,11 +220,11 @@ func valueString(v value.Value) string {
 }
 
 func eq(x, y value.Value) (value.Value, error) {
-	attr, ok := tagValues[x.Tag()]
+	attrs, ok := tagValues[x.Tag()]
 	if !ok {
 		return nil, fmt.Errorf("can't compare %s: tag not found", valueString(x))
 	}
-	eq, ok := attr[tagEq]
+	eq, ok := attrs(x, tagEq)
 	if !ok {
 		return nil, fmt.Errorf("can't compare %s: no eq attribute", valueString(x))
 	}
@@ -245,15 +241,67 @@ var builtinOther = []struct {
 }{
 	{"false", falseValue},
 	{"true", trueValue},
-	{"stop", IterationStop{}},
+	{"tagEq", tagEq},
+	{"tagStringer", tagStringer},
 }
 
-var errNonBasicArgBlock = errors.New("can't create argumented block from non basic block")
+var (
+	errNonBasicArgBlock  = errors.New("can't create argumented block from non basic block")
+	errInvalidAttributes = errors.New("attributes must be lists of unique tag and value pairs")
+)
 
 var builtinBlocks = []struct {
 	name Atom
 	fn   interface{}
 }{
+	{"default", func(b Block, default_ value.Value) (value.Value, error) {
+		v, err := b.runWithoutEnv(unit)
+		if err != nil {
+			return default_, nil
+		}
+		return v, nil
+	}},
+	{"newTag", func(_ Unit) (value.Value, error) {
+		return value.NewTag(), nil
+	}},
+	{"tag", func(v value.Tag) (value.Value, error) {
+		return v.Tag(), nil
+	}},
+	{"opaque", func(v value.Value, tag value.Tag, attrs ...List) (value.Value, error) {
+		// TODO: use Map as attrs when implemented
+
+		m := make(map[value.Tag]value.Value)
+		for _, pair := range attrs {
+			if len(pair.data) != 2 {
+				return nil, errInvalidAttributes
+			}
+			tagV, attr := pair.data[0], pair.data[1]
+			tag, ok := tagV.(value.Tag)
+			if !ok {
+				return nil, errInvalidAttributes
+			}
+
+			if _, ok := m[tag]; ok {
+				return nil, errInvalidAttributes
+			}
+			m[tag] = attr
+		}
+
+		return Opaque{
+			tag:   tag,
+			v:     v,
+			attrs: m,
+		}, nil
+	}},
+	{"unopaque", func(o Opaque, tag value.Tag) (value.Value, error) {
+		if o.tag != tag {
+			return nil, errors.New("can't unopaque: tag doesn't match")
+		}
+		return o.v, nil
+	}},
+	{"opaqueTag", func(o Opaque) (value.Value, error) {
+		return o.tag, nil
+	}},
 	{"mut", func(v value.Value) (value.Value, error) {
 		return &Mut{v}, nil
 	}},
