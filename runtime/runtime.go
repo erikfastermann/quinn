@@ -147,10 +147,17 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 			)
 		}
 	default:
-		return nil, nil, fmt.Errorf("too many arguments in call to basic block (%d)", len(args))
+		return nil, nil, fmt.Errorf(
+			"too many arguments in call to basic block (%d)",
+			len(args),
+		)
 	}
 
-	for i, group := range code {
+	if len(code) == 0 {
+		return env, unit, nil
+	}
+
+	for _, group := range code[:len(code)-1] {
 		var (
 			v   value.Value
 			err error
@@ -160,36 +167,16 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 			return nil, nil, err
 		}
 
-		if i == len(code)-1 {
-			return env, v, nil
-		} else {
-			if _, ok := v.(Unit); !ok {
-				return nil, nil, fmt.Errorf(
-					"non unit value %s in other than last group of block",
-					valueString(v),
-				)
-			}
+		if _, err := getAttribute(v, tagReturner); err != nil {
+			continue
 		}
+		return env, v, nil
 	}
-	return env, unit, nil
-}
-
-func (b basicBlock) withArgs(argNames ...Atom) (Block, error) {
-	for _, a := range argNames {
-		if _, ok := b.env.get(a); ok {
-			return nil, fmt.Errorf(
-				"can't use %s as an argument, already exists in the environment",
-				valueString(a),
-			)
-		}
-	}
-	return argBlock{argNames, b.env, b.code}, nil
+	return evalGroup(env, code[len(code)-1])
 }
 
 type argBlock struct {
-	argNames []Atom
-	env      *Environment
-	code     parser.Block
+	before, b, after basicBlock
 }
 
 func (argBlock) Tag() value.Tag {
@@ -197,22 +184,63 @@ func (argBlock) Tag() value.Tag {
 }
 
 func (b argBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
-	if len(args) != len(b.argNames) {
+	const errBefore = "expected before to return a list " +
+		"of unique atom and value pairs, got %s instead"
+
+	const input = "__args"
+	beforeEnv, ok := b.before.env.insert(Atom(input), List{args})
+	if !ok {
 		return nil, fmt.Errorf(
-			"expected %d arguments, got %d",
-			len(b.argNames),
-			len(args),
+			"before already has %s defined in the environment",
+			input,
 		)
 	}
+	_, kvV, err := runCode(beforeEnv, b.before.code)
+	if err != nil {
+		return nil, err
+	}
+	kv, ok := kvV.(List)
+	if !ok {
+		return nil, fmt.Errorf(errBefore, valueString(kvV))
+	}
 
-	env, ok := b.env, false
-	for i, a := range b.argNames {
-		env, ok = env.insert(a, args[i])
+	env, ok := b.b.env, false
+	for _, pairV := range kv.data {
+		pair, ok := pairV.(List)
 		if !ok {
-			panic(internal)
+			return nil, fmt.Errorf(errBefore, valueString(kv))
+		}
+		if len(pair.data) != 2 {
+			return nil, fmt.Errorf(errBefore, valueString(kv))
+		}
+		atomV, v := pair.data[0], pair.data[1]
+		atom, ok := atomV.(Atom)
+		if !ok {
+			return nil, fmt.Errorf(errBefore, valueString(kv))
+		}
+		env, ok = env.insert(atom, v)
+		if !ok {
+			return nil, fmt.Errorf(
+				"can't use %s as an argument, already exists in the environment",
+				valueString(atom),
+			)
 		}
 	}
-	_, v, err := runCode(env, b.code)
+
+	_, v, err := runCode(env, b.b.code)
+	if err != nil {
+		return nil, err
+	}
+
+	const ret = "__return"
+	afterEnv, ok := b.after.env.insert(Atom(ret), v)
+	if !ok {
+		return nil, fmt.Errorf(
+			"after already has %s defined in the environment",
+			ret,
+		)
+	}
+	_, v, err = runCode(afterEnv, b.after.code)
 	return v, err
 }
 

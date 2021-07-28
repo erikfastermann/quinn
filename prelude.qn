@@ -1,12 +1,61 @@
-defop "&&" x y {
+tagReturn = newTag ()
+returner = argumentify { [[ret (__args@0)]] } { unopaque ret tagReturn } { __return }
+# TODO: check __args len
+defBefore = { [[args (__args@0)] [block (__args@1)]] }
+defBlock = {
+	(argumentify
+		{
+			i = mut 0
+			out = mut []
+			loop {
+				ii = load i
+				if (ii >= (len __args)) {
+					(opaque
+						(load out)
+						tagReturn
+						[tagReturner returner]
+					)
+				} {
+					out <- append (load out) [(args@ii) (__args@ii)]
+					i <- (ii + 1)
+				}
+			}
+		}
+		block
+		{ __return }
+	)
+}
+def = (argumentify
+	defBefore
+	defBlock
+	{ default { (attr __return tagReturner) __return } { __return } }
+)
+(atom "->") = def
+
+returnStringer = def [_] { "return" }
+returnReturner = def [ret] { unopaque ret tagReturn }
+return = def [x] {
+	(opaque
+		x
+		tagReturn
+		[tagStringer returnStringer]
+		[tagReturner returnReturner]
+	)
+}
+
+(atom "&&") = def [x y] {
 	if x {
-		y ()
+		if (y ()) {
+			true
+		} {
+			false
+		}
 	} {
 		false
 	}
 }
 
-defop "||" x y {
+(atom "||") = def [x y] {
 	if x {
 		true
 	} {
@@ -18,14 +67,14 @@ defop "||" x y {
 	}
 }
 
-defop "|" a b {
+(atom "|") = def [a b] {
 	args = append_list [a] (slice b 1 (len b))
 	call (b @ 0) args
 }
 
 
 tagStop = newTag ()
-stopEq = ([x y] -> { (opaqueTag x) == (default {opaqueTag y} ()) })
+stopEq = ([_ v] -> { default { opaqueTagEq v tagStop } { false } })
 stopStringer = ([_] -> { "stop" })
 stop = opaque () tagStop [tagEq stopEq] [tagStringer stopStringer]
 
@@ -51,12 +100,10 @@ filter = ([iter cond] -> {
 			loop {
 				v = next ()
 				if (v == stop) {
-					stop
-				} {
-					if (cond v) {
-						# if v == () this won't work
-						v
-					}
+					return stop
+				}
+				if (cond v) {
+					return v
 				}
 			}
 		}
@@ -69,15 +116,14 @@ toList = ([iter] -> {
 	loop {
 		v = next ()
 		if (v == stop) {
-			load out
-		} {
-			out <- (append (load out) v)
+			return (load out)
 		}
+		out <- (append (load out) v)
 	}
 })
 
 # TODO: check start <= end
-defop ".." start end {
+(atom "..") = def [start end] {
 	{
 		i = mut start
 		{
@@ -91,4 +137,3 @@ defop ".." start end {
 		}
 	}
 }
-

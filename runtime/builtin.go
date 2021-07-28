@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	tagReturner = value.NewTag()
 	tagStringer = value.NewTag()
 	tagEq       = value.NewTag()
 )
@@ -219,18 +220,34 @@ func valueString(v value.Value) string {
 	return string(s)
 }
 
+func getAttribute(v value.Value, tag value.Tag) (value.Value, error) {
+	attrs, ok := tagValues[v.Tag()]
+	if !ok {
+		return nil, fmt.Errorf("%s: value tag not found", valueString(v))
+	}
+	attr, ok := attrs(v, tag)
+	if !ok {
+		return nil, fmt.Errorf("%s: attribute tag not found", valueString(v))
+	}
+	return attr, nil
+}
+
+func getAttributeBlock(v value.Value, tag value.Tag) (Block, error) {
+	attr, err := getAttribute(v, tag)
+	if err != nil {
+		return nil, err
+	}
+	b, ok := attr.(Block)
+	if !ok {
+		return nil, fmt.Errorf("%s: attribute is not a Block", valueString(v))
+	}
+	return b, nil
+}
+
 func eq(x, y value.Value) (value.Value, error) {
-	attrs, ok := tagValues[x.Tag()]
-	if !ok {
-		return nil, fmt.Errorf("can't compare %s: tag not found", valueString(x))
-	}
-	eq, ok := attrs(x, tagEq)
-	if !ok {
-		return nil, fmt.Errorf("can't compare %s: no eq attribute", valueString(x))
-	}
-	b, ok := eq.(Block)
-	if !ok {
-		return nil, fmt.Errorf("can't compare %s: eq is not a Block", valueString(x))
+	b, err := getAttributeBlock(x, tagEq)
+	if err != nil {
+		return nil, err
 	}
 	return b.runWithoutEnv(x, y)
 }
@@ -241,6 +258,7 @@ var builtinOther = []struct {
 }{
 	{"false", falseValue},
 	{"true", trueValue},
+	{"tagReturner", tagReturner},
 	{"tagEq", tagEq},
 	{"tagStringer", tagStringer},
 }
@@ -254,18 +272,24 @@ var builtinBlocks = []struct {
 	name Atom
 	fn   interface{}
 }{
-	{"default", func(b Block, default_ value.Value) (value.Value, error) {
+	{"default", func(b Block, default_ Block) (value.Value, error) {
 		v, err := b.runWithoutEnv(unit)
 		if err != nil {
-			return default_, nil
+			return default_.runWithoutEnv(unit)
 		}
 		return v, nil
+	}},
+	{"atom", func(s String) (value.Value, error) {
+		return Atom(s), nil
 	}},
 	{"newTag", func(_ Unit) (value.Value, error) {
 		return value.NewTag(), nil
 	}},
 	{"tag", func(v value.Tag) (value.Value, error) {
 		return v.Tag(), nil
+	}},
+	{"attr", func(v value.Value, attr value.Tag) (value.Value, error) {
+		return getAttribute(v, attr)
 	}},
 	{"opaque", func(v value.Value, tag value.Tag, attrs ...List) (value.Value, error) {
 		// TODO: use Map as attrs when implemented
@@ -287,11 +311,12 @@ var builtinBlocks = []struct {
 			m[tag] = attr
 		}
 
-		return Opaque{
+		o := Opaque{
 			tag:   tag,
 			v:     v,
 			attrs: m,
-		}, nil
+		}
+		return o, nil
 	}},
 	{"unopaque", func(o Opaque, tag value.Tag) (value.Value, error) {
 		if o.tag != tag {
@@ -299,8 +324,8 @@ var builtinBlocks = []struct {
 		}
 		return o.v, nil
 	}},
-	{"opaqueTag", func(o Opaque) (value.Value, error) {
-		return o.tag, nil
+	{"opaqueTagEq", func(o Opaque, tag value.Tag) (value.Value, error) {
+		return NewBool(o.tag == tag), nil
 	}},
 	{"mut", func(v value.Value) (value.Value, error) {
 		return &Mut{v}, nil
@@ -363,49 +388,20 @@ var builtinBlocks = []struct {
 	{"%%", func(x, y number.Number) (value.Value, error) {
 		return x.Mod(y)
 	}},
-	{"->", func(def List, block Block) (value.Value, error) {
-		atoms := make([]Atom, len(def.data))
-		for i, v := range def.data {
-			atom, ok := v.(Atom)
-			if !ok {
-				return v, fmt.Errorf("argument has to be atom, got %s", valueString(v))
-			}
-			atoms[i] = atom
-		}
-		switch b := block.(type) {
-		case basicBlock:
-			block, err := b.withArgs(atoms...)
-			if err != nil {
-				return nil, err
-			}
-			return block, nil
-		default:
+	{"argumentify", func(beforeB, bB, afterB Block) (value.Value, error) {
+		before, ok := beforeB.(basicBlock)
+		if !ok {
 			return nil, errNonBasicArgBlock
 		}
-	}},
-	{"defop", func(env *Environment, symbol String, lhs, rhs Atom, block Block) (*Environment, value.Value, error) {
-		// TODO: check symbol is valid operator
-
-		var blockV Block
-		switch b := block.(type) {
-		case basicBlock:
-			var err error
-			blockV, err = b.withArgs(lhs, rhs)
-			if err != nil {
-				return nil, nil, err
-			}
-		default:
-			return nil, nil, errNonBasicArgBlock
-		}
-
-		next, ok := env.insert(Atom(symbol), blockV)
+		b, ok := bB.(basicBlock)
 		if !ok {
-			return nil, nil, fmt.Errorf(
-				"couldn't assign to name, %s already exists",
-				valueString(symbol),
-			)
+			return nil, errNonBasicArgBlock
 		}
-		return next, unit, nil
+		after, ok := afterB.(basicBlock)
+		if !ok {
+			return nil, errNonBasicArgBlock
+		}
+		return argBlock{before: before, b: b, after: after}, nil
 	}},
 	{"if", func(cond value.Value, tBlock Block, blocks ...Block) (value.Value, error) {
 		var fBlock Block
@@ -433,11 +429,14 @@ var builtinBlocks = []struct {
 		for {
 			v, err := block.runWithoutEnv()
 			if err != nil {
-				return v, err
+				return nil, err
 			}
-			if _, isUnit := v.(Unit); !isUnit {
-				return v, nil
+			// TODO: use getAttribute for better error reporting
+			returner, err := getAttributeBlock(v, tagReturner)
+			if err != nil {
+				continue
 			}
+			return returner.runWithoutEnv(v)
 		}
 	}},
 	{"@", func(l List, idx number.Number) (value.Value, error) {
