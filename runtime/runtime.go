@@ -114,11 +114,11 @@ func opaqueMatcher(v value.Value, tag value.Tag) (value.Value, bool) {
 type Block interface {
 	value.Value
 	runWithoutEnv(args ...value.Value) (value.Value, error)
-	runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error)
+	runWithEnv(env *Environment, args ...value.Value) (*Environment, value.Value, error)
 }
 
 type basicBlock struct {
-	env  *environment
+	env  *Environment
 	code parser.Block
 }
 
@@ -127,26 +127,27 @@ func (basicBlock) Tag() value.Tag {
 }
 
 func (b basicBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
-	return runCode(b.env, b.code, args...)
+	_, v, err := runCode(b.env, b.code, args...)
+	return v, err
 }
 
-func (b basicBlock) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
-	v, err := runCode(b.env, b.code, args...)
+func (b basicBlock) runWithEnv(env *Environment, args ...value.Value) (*Environment, value.Value, error) {
+	_, v, err := runCode(b.env, b.code, args...)
 	return env, v, err
 }
 
-func runCode(env *environment, code parser.Block, args ...value.Value) (value.Value, error) {
+func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environment, value.Value, error) {
 	switch len(args) {
 	case 0:
 	case 1:
 		if _, isUnit := args[0].(Unit); !isUnit {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"first argument in call to basic block must be unit, not %s",
 				valueString(args[0]),
 			)
 		}
 	default:
-		return nil, fmt.Errorf("too many arguments in call to basic block (%d)", len(args))
+		return nil, nil, fmt.Errorf("too many arguments in call to basic block (%d)", len(args))
 	}
 
 	for i, group := range code {
@@ -156,21 +157,21 @@ func runCode(env *environment, code parser.Block, args ...value.Value) (value.Va
 		)
 		env, v, err = evalGroup(env, group)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		if i == len(code)-1 {
-			return v, nil
+			return env, v, nil
 		} else {
 			if _, ok := v.(Unit); !ok {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"non unit value %s in other than last group of block",
 					valueString(v),
 				)
 			}
 		}
 	}
-	return unit, nil
+	return env, unit, nil
 }
 
 func (b basicBlock) withArgs(argNames ...Atom) (Block, error) {
@@ -187,7 +188,7 @@ func (b basicBlock) withArgs(argNames ...Atom) (Block, error) {
 
 type argBlock struct {
 	argNames []Atom
-	env      *environment
+	env      *Environment
 	code     parser.Block
 }
 
@@ -211,10 +212,11 @@ func (b argBlock) runWithoutEnv(args ...value.Value) (value.Value, error) {
 			panic(internal)
 		}
 	}
-	return runCode(env, b.code)
+	_, v, err := runCode(env, b.code)
+	return v, err
 }
 
-func (b argBlock) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
+func (b argBlock) runWithEnv(env *Environment, args ...value.Value) (*Environment, value.Value, error) {
 	v, err := b.runWithoutEnv(args...)
 	return env, v, err
 }
@@ -222,7 +224,7 @@ func (b argBlock) runWithEnv(env *environment, args ...value.Value) (*environmen
 var (
 	typeValue          = reflect.TypeOf((*value.Value)(nil)).Elem()
 	typeError          = reflect.TypeOf((*error)(nil)).Elem()
-	typePtrEnvironment = reflect.TypeOf((*environment)(nil))
+	typePtrEnvironment = reflect.TypeOf((*Environment)(nil))
 )
 
 func newBlockMust(fn interface{}) Block {
@@ -351,7 +353,7 @@ func (b fnBlockWithoutEnv) runWithoutEnv(args ...value.Value) (value.Value, erro
 	return v, err
 }
 
-func (b fnBlockWithoutEnv) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
+func (b fnBlockWithoutEnv) runWithEnv(env *Environment, args ...value.Value) (*Environment, value.Value, error) {
 	v, err := b.runWithoutEnv(args...)
 	return env, v, err
 }
@@ -366,8 +368,8 @@ func (fnBlockWithEnv) Tag() value.Tag {
 	return tagBlock
 }
 
-func (b fnBlockWithEnv) runWithEnv(env *environment, args ...value.Value) (*environment, value.Value, error) {
-	if fn, ok := b.fn.(func(*environment, ...value.Value) (*environment, value.Value, error)); ok {
+func (b fnBlockWithEnv) runWithEnv(env *Environment, args ...value.Value) (*Environment, value.Value, error) {
+	if fn, ok := b.fn.(func(*Environment, ...value.Value) (*Environment, value.Value, error)); ok {
 		return fn(env, args...)
 	}
 
@@ -384,7 +386,7 @@ func (b fnBlockWithEnv) runWithEnv(env *environment, args ...value.Value) (*envi
 
 	var (
 		out  []reflect.Value
-		next *environment
+		next *Environment
 		v    value.Value
 		err  error
 	)
@@ -394,7 +396,7 @@ func (b fnBlockWithEnv) runWithEnv(env *environment, args ...value.Value) (*envi
 		out = reflect.ValueOf(b.fn).Call(in)
 	}
 	if nextV := out[0].Interface(); nextV != nil {
-		next = nextV.(*environment)
+		next = nextV.(*Environment)
 	}
 	if iV := out[1].Interface(); iV != nil {
 		v = iV.(value.Value)
@@ -462,7 +464,7 @@ func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflec
 	return nil
 }
 
-func evalGroup(env *environment, group parser.Group) (*environment, value.Value, error) {
+func evalGroup(env *Environment, group parser.Group) (*Environment, value.Value, error) {
 	switch len(group) {
 	case 0:
 		return env, unit, nil
@@ -489,7 +491,7 @@ func evalGroup(env *environment, group parser.Group) (*environment, value.Value,
 		case parser.String:
 			name = Atom(first)
 		case parser.Block:
-			v, err := runCode(env, first, args...)
+			_, v, err := runCode(env, first, args...)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -532,7 +534,7 @@ func evalGroup(env *environment, group parser.Group) (*environment, value.Value,
 	}
 }
 
-func evalElement(env *environment, element parser.Element) (*environment, value.Value, error) {
+func evalElement(env *Environment, element parser.Element) (*Environment, value.Value, error) {
 	switch v := element.(type) {
 	case parser.Atom:
 		val, ok := env.get(Atom(v))
@@ -594,15 +596,15 @@ func evalElement(env *environment, element parser.Element) (*environment, value.
 	}
 }
 
-type environment struct {
+type Environment struct {
 	// TODO: use persistent map
 
 	key         Atom
 	value       value.Value
-	left, right *environment
+	left, right *Environment
 }
 
-func (env *environment) get(k Atom) (value.Value, bool) {
+func (env *Environment) get(k Atom) (value.Value, bool) {
 	// TODO: iterative
 
 	if env == nil {
@@ -618,9 +620,9 @@ func (env *environment) get(k Atom) (value.Value, bool) {
 	}
 }
 
-func (env *environment) insert(k Atom, v value.Value) (*environment, bool) {
+func (env *Environment) insert(k Atom, v value.Value) (*Environment, bool) {
 	if env == nil {
-		return &environment{k, v, nil, nil}, true
+		return &Environment{k, v, nil, nil}, true
 	}
 
 	if k < env.key {
@@ -628,32 +630,24 @@ func (env *environment) insert(k Atom, v value.Value) (*environment, bool) {
 		if !ok {
 			return nil, false
 		}
-		return &environment{env.key, env.value, next, env.right}, true
+		return &Environment{env.key, env.value, next, env.right}, true
 	} else if k > env.key {
 		next, ok := env.right.insert(k, v)
 		if !ok {
 			return nil, false
 		}
-		return &environment{env.key, env.value, env.left, next}, true
+		return &Environment{env.key, env.value, env.left, next}, true
 	} else {
 		return nil, false
 	}
 }
 
-func (env *environment) String() string {
-	s := env.stringRec()
-	if len(s) == 0 {
-		return "(map ())"
-	}
-	return fmt.Sprintf("(map %s)", s)
-}
-
-func (env *environment) stringRec() string {
+func (env *Environment) String() string {
 	if env == nil {
 		return ""
 	}
 
-	left := env.left.stringRec()
+	left := env.left.String()
 	str := left
 	if len(left) > 0 {
 		str += " "
@@ -661,7 +655,7 @@ func (env *environment) stringRec() string {
 
 	str += fmt.Sprintf("[%s %s]", env.key, valueString(env.value))
 
-	right := env.right.stringRec()
+	right := env.right.String()
 	if len(right) > 0 {
 		str += " "
 	}
@@ -670,16 +664,10 @@ func (env *environment) stringRec() string {
 	return str
 }
 
-func Run(block parser.Block) error {
-	v, err := runCode(envWithBuiltins, block)
-	if err != nil {
-		return err
+func Run(env *Environment, block parser.Block) (*Environment, error) {
+	if env == nil {
+		env = builtinEnv
 	}
-	if _, isUnit := v.(Unit); !isUnit {
-		return fmt.Errorf(
-			"last group in root block evaluates to %s, not unit",
-			valueString(v),
-		)
-	}
-	return nil
+	env, _, err := runCode(env, block)
+	return env, err
 }

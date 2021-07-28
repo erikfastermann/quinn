@@ -1,0 +1,94 @@
+defop "&&" x y {
+	if x {
+		y ()
+	} {
+		false
+	}
+}
+
+defop "||" x y {
+	if x {
+		true
+	} {
+		if (y ()) {
+			true
+		} {
+			false
+		}
+	}
+}
+
+defop "|" a b {
+	args = append_list [a] (slice b 1 (len b))
+	call (b @ 0) args
+}
+
+
+tagStop = newTag ()
+stopEq = ([x y] -> { (opaqueTag x) == (default {opaqueTag y} ()) })
+stopStringer = ([_] -> { "stop" })
+stop = opaque () tagStop [tagEq stopEq] [tagStringer stopStringer]
+
+lit = ([list] -> {
+	{
+		i = mut 0
+		{
+			cur = load i
+			if (cur >= (len list)) {
+				stop
+			} {
+				i <- (cur + 1)
+				list@cur
+			}
+		}
+	}
+})
+
+filter = ([iter cond] -> {
+	{
+		next = iter ()
+		{
+			loop {
+				v = next ()
+				if (v == stop) {
+					stop
+				} {
+					if (cond v) {
+						# if v == () this won't work
+						v
+					}
+				}
+			}
+		}
+	}
+})
+
+toList = ([iter] -> {
+	out = mut []
+	next = iter ()
+	loop {
+		v = next ()
+		if (v == stop) {
+			load out
+		} {
+			out <- (append (load out) v)
+		}
+	}
+})
+
+# TODO: check start <= end
+defop ".." start end {
+	{
+		i = mut start
+		{
+			cur = load i
+			if (cur >= end) {
+				stop
+			} {
+				i <- (cur + 1)
+				cur
+			}
+		}
+	}
+}
+

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,39 +11,43 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	if len(os.Args) != 2 {
+		return fmt.Errorf("USAGE: %s FILE\n", os.Args[0])
+	}
 	f, err := os.Open(os.Args[1])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
+		return err
 	}
 	defer f.Close()
 
-	// l := NewLexer(bytes.NewReader(b))
-	// for {
-	// 	t, err := l.Next()
-	// 	if err != nil {
-	// 		if err == io.EOF {
-	// 			break
-	// 		}
-	// 		fmt.Fprintln(os.Stderr, err)
-	// 	}
-	// 	if _, ok := t.(EndOfLine); ok {
-	// 		fmt.Println()
-	// 	} else {
-	// 		fmt.Printf("%s ", t)
-	// 	}
-	// }
-	// fmt.Println()
+	var env *runtime.Environment
+	prelude, err := os.Open("prelude.qn")
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	} else {
+		block, err := parser.Parse(parser.NewLexer(bufio.NewReader(prelude)))
+		if err != nil {
+			return err
+		}
+		env, err = runtime.Run(nil, block)
+		if err != nil {
+			return err
+		}
+	}
 
 	block, err := parser.Parse(parser.NewLexer(bufio.NewReader(f)))
-	// fmt.Println(block.String())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
+		return err
 	}
-
-	if err := runtime.Run(block); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
+	_, err = runtime.Run(env, block)
+	return err
 }

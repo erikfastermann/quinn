@@ -312,7 +312,7 @@ var builtinBlocks = []struct {
 		target.v = v
 		return unit, nil
 	}},
-	{"=", func(env *environment, assignee Atom, v value.Value) (*environment, value.Value, error) {
+	{"=", func(env *Environment, assignee Atom, v value.Value) (*Environment, value.Value, error) {
 		next, ok := env.insert(assignee, v)
 		if !ok {
 			return nil, nil, fmt.Errorf(
@@ -383,7 +383,7 @@ var builtinBlocks = []struct {
 			return nil, errNonBasicArgBlock
 		}
 	}},
-	{"defop", func(env *environment, symbol String, lhs, rhs Atom, block Block) (*environment, value.Value, error) {
+	{"defop", func(env *Environment, symbol String, lhs, rhs Atom, block Block) (*Environment, value.Value, error) {
 		// TODO: check symbol is valid operator
 
 		var blockV Block
@@ -515,12 +515,12 @@ var builtinBlocks = []struct {
 	}},
 }
 
-var envWithBuiltins *environment = nil
+var builtinEnv *Environment = nil
 
 func init() {
 	var ok bool
 	for _, builtin := range builtinBlocks {
-		envWithBuiltins, ok = envWithBuiltins.insert(
+		builtinEnv, ok = builtinEnv.insert(
 			builtin.name,
 			newBlockMust(builtin.fn),
 		)
@@ -529,7 +529,7 @@ func init() {
 		}
 	}
 	for _, builtin := range builtinOther {
-		envWithBuiltins, ok = envWithBuiltins.insert(builtin.name, builtin.value)
+		builtinEnv, ok = builtinEnv.insert(builtin.name, builtin.value)
 		if !ok {
 			panic(internal)
 		}
