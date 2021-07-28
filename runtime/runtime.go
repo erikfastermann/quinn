@@ -157,12 +157,12 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 		return env, unit, nil
 	}
 
-	for _, group := range code[:len(code)-1] {
+	for _, elem := range code[:len(code)-1] {
 		var (
 			v   value.Value
 			err error
 		)
-		env, v, err = evalGroup(env, group)
+		env, v, err = evalElement(env, elem)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -172,7 +172,7 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 		}
 		return env, v, nil
 	}
-	return evalGroup(env, code[len(code)-1])
+	return evalElement(env, code[len(code)-1])
 }
 
 type argBlock struct {
@@ -492,98 +492,32 @@ func prepareReflectCall(in []reflect.Value, inTypes []reflect.Type, slice reflec
 	return nil
 }
 
-func evalGroup(env *Environment, group parser.Group) (*Environment, value.Value, error) {
-	switch len(group) {
-	case 0:
-		return env, unit, nil
-	case 1:
-		return evalElement(env, group[0])
-	default:
-		args := make([]value.Value, len(group)-1)
-		for i, e := range group[1:] {
-			var (
-				v   value.Value
-				err error
-			)
-			env, v, err = evalElement(env, e)
-			if err != nil {
-				return nil, nil, err
-			}
-			args[i] = v
-		}
-
-		var name Atom
-		switch first := group[0].(type) {
-		case parser.Atom:
-			name = Atom(first)
-		case parser.String:
-			name = Atom(first)
-		case parser.Block:
-			_, v, err := runCode(env, first, args...)
-			if err != nil {
-				return nil, nil, err
-			}
-			return env, v, nil
-		case parser.Group:
-			var (
-				blockV value.Value
-				err    error
-			)
-			env, blockV, err = evalGroup(env, first)
-			if err != nil {
-				return nil, nil, err
-			}
-			block, ok := blockV.(Block)
-			if !ok {
-				return nil, nil, fmt.Errorf(
-					"can't call value %s, not a block",
-					valueString(blockV),
-				)
-			}
-			return block.runWithEnv(env, args...)
-		default:
-			// TODO: parser: check atom/string/block/group is first
-			panic(internal)
-		}
-
-		nameV, ok := env.get(name)
-		if !ok {
-			return nil, nil, fmt.Errorf("name %s not found", valueString(name))
-		}
-		block, ok := nameV.(Block)
-		if !ok {
-			return nil, nil, fmt.Errorf(
-				"name %s is not a block, but a %s value instead",
-				valueString(name),
-				valueString(nameV),
-			)
-		}
-		return block.runWithEnv(env, args...)
-	}
-}
-
 func evalElement(env *Environment, element parser.Element) (*Environment, value.Value, error) {
 	switch v := element.(type) {
-	case parser.Atom:
+	case parser.Ref:
 		val, ok := env.get(Atom(v))
 		if !ok {
-			return env, Atom(string(v)), nil
+			return nil, nil, fmt.Errorf("unknown variable %s", v)
 		}
 		return env, val, nil
+	case parser.Atom:
+		return env, Atom(string(v)), nil
 	case parser.String:
 		return env, String(v), nil
 	case parser.Number:
 		return env, number.Number(v), nil
+	case parser.Unit:
+		return env, unit, nil
 	case parser.Operator:
 		var (
 			lhsV, rhsV value.Value
 			err        error
 		)
-		env, lhsV, err = evalGroup(env, v.Lhs)
+		env, lhsV, err = evalElement(env, v.Lhs)
 		if err != nil {
 			return nil, nil, err
 		}
-		env, rhsV, err = evalGroup(env, v.Rhs)
+		env, rhsV, err = evalElement(env, v.Rhs)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -601,6 +535,36 @@ func evalElement(env *Environment, element parser.Element) (*Environment, value.
 			)
 		}
 		return block.runWithEnv(env, lhsV, rhsV)
+	case parser.Call:
+		args := make([]value.Value, len(v.Args))
+		for i, e := range v.Args {
+			var (
+				v   value.Value
+				err error
+			)
+			env, v, err = evalElement(env, e)
+			if err != nil {
+				return nil, nil, err
+			}
+			args[i] = v
+		}
+
+		var (
+			val value.Value
+			err error
+		)
+		env, val, err = evalElement(env, v.First)
+		if err != nil {
+			return nil, nil, err
+		}
+		b, ok := val.(Block)
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"first in call must evaluate to block, got %s instead",
+				valueString(val),
+			)
+		}
+		return b.runWithEnv(env, args...)
 	case parser.List:
 		l := make([]value.Value, len(v))
 		for i, e := range v {
@@ -615,8 +579,6 @@ func evalElement(env *Environment, element parser.Element) (*Environment, value.
 			l[i] = v
 		}
 		return env, List{l}, nil
-	case parser.Group:
-		return evalGroup(env, v)
 	case parser.Block:
 		return env, basicBlock{env, v}, nil
 	default:

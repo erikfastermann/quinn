@@ -1,2 +1,2 @@
-add1 = def [a] { a + 1 }
+'add1 = def ['a] { a + 1 }
 println (add1 42)

@@ -1,14 +1,14 @@
-tagReturn = newTag ()
-returner = argumentify { [[ret (__args@0)]] } { unopaque ret tagReturn } { __return }
+'tagReturn = newTag ()
+'returner = argumentify { [['ret (__args@0)]] } { unopaque ret tagReturn } { __return }
 # TODO: check __args len
-defBefore = { [[args (__args@0)] [block (__args@1)]] }
-defBlock = {
+'defBefore = { [['args (__args@0)] ['block (__args@1)]] }
+'defBlock = {
 	(argumentify
 		{
-			i = mut 0
-			out = mut []
+			'i = mut 0
+			'out = mut []
 			loop {
-				ii = load i
+				'ii = load i
 				if (ii >= (len __args)) {
 					(opaque
 						(load out)
@@ -25,16 +25,16 @@ defBlock = {
 		{ __return }
 	)
 }
-def = (argumentify
+'def = (argumentify
 	defBefore
 	defBlock
 	{ default { (attr __return tagReturner) __return } { __return } }
 )
 (atom "->") = def
 
-returnStringer = def [_] { "return" }
-returnReturner = def [ret] { unopaque ret tagReturn }
-return = def [x] {
+'returnStringer = def ['_] { "return" }
+'returnReturner = def ['ret] { unopaque ret tagReturn }
+'return = def ['x] {
 	(opaque
 		x
 		tagReturn
@@ -43,7 +43,7 @@ return = def [x] {
 	)
 }
 
-(atom "&&") = def [x y] {
+(atom "&&") = def ['x 'y] {
 	if x {
 		if (y ()) {
 			true
@@ -55,7 +55,7 @@ return = def [x] {
 	}
 }
 
-(atom "||") = def [x y] {
+(atom "||") = def ['x 'y] {
 	if x {
 		true
 	} {
@@ -67,22 +67,22 @@ return = def [x] {
 	}
 }
 
-(atom "|") = def [a b] {
-	args = append_list [a] (slice b 1 (len b))
+(atom "|") = def ['a 'b] {
+	'args = append_list [a] (slice b 1 (len b))
 	call (b @ 0) args
 }
 
 
-tagStop = newTag ()
-stopEq = ([_ v] -> { default { opaqueTagEq v tagStop } { false } })
-stopStringer = ([_] -> { "stop" })
-stop = opaque () tagStop [tagEq stopEq] [tagStringer stopStringer]
+'tagStop = newTag ()
+'stopEq = (['_ 'v] -> { default { opaqueTagEq v tagStop } { false } })
+'stopStringer = (['_] -> { "stop" })
+'stop = opaque () tagStop [tagEq stopEq] [tagStringer stopStringer]
 
-lit = ([list] -> {
+'lit = (['list] -> {
 	{
-		i = mut 0
+		'i = mut 0
 		{
-			cur = load i
+			'cur = load i
 			if (cur >= (len list)) {
 				stop
 			} {
@@ -93,12 +93,12 @@ lit = ([list] -> {
 	}
 })
 
-filter = ([iter cond] -> {
+'filter = (['iter 'cond] -> {
 	{
-		next = iter ()
+		'next = iter ()
 		{
 			loop {
-				v = next ()
+				'v = next ()
 				if (v == stop) {
 					return stop
 				}
@@ -110,11 +110,11 @@ filter = ([iter cond] -> {
 	}
 })
 
-toList = ([iter] -> {
-	out = mut []
-	next = iter ()
+'toList = (['iter] -> {
+	'out = mut []
+	'next = iter ()
 	loop {
-		v = next ()
+		'v = next ()
 		if (v == stop) {
 			return (load out)
 		}
@@ -123,11 +123,11 @@ toList = ([iter] -> {
 })
 
 # TODO: check start <= end
-(atom "..") = def [start end] {
+(atom "..") = def ['start 'end] {
 	{
-		i = mut start
+		'i = mut start
 		{
-			cur = load i
+			'cur = load i
 			if (cur >= end) {
 				stop
 			} {

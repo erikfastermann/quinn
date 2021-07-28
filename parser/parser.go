@@ -27,6 +27,11 @@ type Token interface {
 	token()
 }
 
+type Ref string
+
+func (Ref) element() {}
+func (Ref) token()   {}
+
 type Atom string
 
 func (Atom) element() {}
@@ -92,14 +97,25 @@ type EndOfLine struct{}
 
 func (EndOfLine) token() {}
 
-type Group []Element
+type group []Element
 
-func (Group) element() {}
+func (group) element() {}
+
+type Unit struct{}
+
+func (Unit) element() {}
+
+type Call struct {
+	First Element
+	Args  []Element
+}
+
+func (Call) element() {}
 
 type Operator struct {
-	Lhs    Group
+	Lhs    Element
 	Symbol Symbol
-	Rhs    Group
+	Rhs    Element
 }
 
 func (Operator) element() {}
@@ -108,7 +124,7 @@ type List []Element
 
 func (List) element() {}
 
-type Block []Group
+type Block []Element
 
 func (Block) element() {}
 
@@ -143,13 +159,15 @@ func (b Block) recString(prefix string) string {
 
 func elementString(e Element, prefix string) string {
 	switch v := e.(type) {
+	case Ref:
+		return string(v)
 	case Atom:
 		return string(v)
 	case String:
 		return strconv.Quote(string(v))
 	case Number:
 		return (number.Number(v)).String()
-	case Group:
+	case group:
 		var b strings.Builder
 		b.WriteString("(")
 		for i, e := range v {
@@ -304,12 +322,35 @@ func (l *Lexer) next() (Token, error) {
 		for {
 			ch, _, err := l.r.ReadRune()
 			if err != nil {
+				if err == io.EOF {
+					// assumed that subsequent reads will return io.EOF
+					return EndOfLine{}, nil
+				}
 				return nil, err
 			}
 			if ch == '\n' {
 				return EndOfLine{}, nil
 			}
 		}
+	case '\'':
+		// TODO: check first char is not a number
+
+		var atom strings.Builder
+		for {
+			ch, _, err := l.r.ReadRune()
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return nil, err
+			}
+			if !isAtomChar(ch) {
+				must(l.r.UnreadRune())
+				break
+			}
+			atom.WriteRune(ch)
+		}
+		return Atom(atom.String()), nil
 	default:
 		if ch >= '0' && ch <= '9' {
 			// TODO: support hex, binary, octal
@@ -343,8 +384,8 @@ func (l *Lexer) next() (Token, error) {
 			}
 			return Number(n), nil
 		} else if isAtomChar(ch) {
-			var atom strings.Builder
-			atom.WriteRune(ch)
+			var ref strings.Builder
+			ref.WriteRune(ch)
 			for {
 				ch, _, err := l.r.ReadRune()
 				if err != nil {
@@ -357,9 +398,9 @@ func (l *Lexer) next() (Token, error) {
 					must(l.r.UnreadRune())
 					break
 				}
-				atom.WriteRune(ch)
+				ref.WriteRune(ch)
 			}
-			return Atom(atom.String()), nil
+			return Ref(ref.String()), nil
 		} else if isSymbol(ch) {
 			var symbol strings.Builder
 			symbol.WriteRune(ch)
@@ -390,7 +431,7 @@ func isAtomChar(ch rune) bool {
 
 func isSymbol(ch rune) bool {
 	switch ch {
-	case '"', '(', ')', '{', '}', '[', ']', '_':
+	case '"', '\'', '(', ')', '{', '}', '[', ']', '_':
 		return false
 	default:
 		return unicode.IsSymbol(ch) || unicode.IsPunct(ch)
@@ -410,8 +451,27 @@ type parser struct {
 	l *Lexer
 }
 
-func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) {
-	var g Group
+func (p *parser) groupOrSimplify(explicitBracket bool, errorOnSymbol bool) (Element, error) {
+	g, err := p.group(explicitBracket, errorOnSymbol)
+	if err != nil {
+		return g, err
+	}
+	return simplifyGroup(g), nil
+}
+
+func simplifyGroup(g group) Element {
+	switch len(g) {
+	case 0:
+		return Unit{}
+	case 1:
+		return g[0]
+	default:
+		return Call{First: g[0], Args: g[1:]}
+	}
+}
+
+func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (group, error) {
+	var g group
 
 	for {
 		t, err := p.l.Next()
@@ -428,18 +488,13 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 				return g, fmt.Errorf("more than 1 symbol (%s) in group, use extra brackets", v)
 			}
 
-			rhs, err := p.group(explicitBracket, true)
-			op := Operator{g, v, rhs}
-			g = Group{op}
+			rhs, err := p.groupOrSimplify(explicitBracket, true)
+			op := Operator{simplifyGroup(g), v, rhs}
+			g = group{op}
 			if err != nil {
 				return g, err
 			}
-			if len(op.Lhs) == 0 {
-				return g, fmt.Errorf("operator %s has an empty left side", op.Symbol)
-			}
-			if len(op.Rhs) == 0 {
-				return g, fmt.Errorf("operator %s has an empty right side", op.Symbol)
-			}
+			// TODO: check if operator has empty left/right hand side?
 			return g, nil
 		case ClosedBracket:
 			if !explicitBracket {
@@ -447,8 +502,8 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 			}
 			return g, nil
 		case OpenBracket:
-			gg, err := p.group(true, false)
-			g = append(g, gg)
+			e, err := p.groupOrSimplify(true, false)
+			g = append(g, e)
 			if err != nil {
 				return g, err
 			}
@@ -456,7 +511,7 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (Group, error) 
 			if !explicitBracket {
 				return g, nil
 			}
-		case Atom, String, Number:
+		case Atom, String, Number, Ref:
 			g = append(g, v.(Element))
 		case OpenCurly:
 			b, err := p.block(true)
@@ -502,13 +557,13 @@ func (p *parser) list() (List, error) {
 		case ClosedBracket:
 			return l, errors.New("unexpected ']'")
 		case OpenBracket:
-			g, err := p.group(true, false)
-			l = append(l, g)
+			e, err := p.groupOrSimplify(true, false)
+			l = append(l, e)
 			if err != nil {
 				return l, err
 			}
 		case EndOfLine:
-		case Atom, String, Number:
+		case Atom, Ref, String, Number:
 			l = append(l, v.(Element))
 		case OpenCurly:
 			b, err := p.block(true)
@@ -557,8 +612,8 @@ func (p *parser) block(explicitCurly bool) (Block, error) {
 			return b, errors.New("unexpected ']'")
 		default:
 			p.l.Unread()
-			g, err := p.group(false, false)
-			b = append(b, g)
+			e, err := p.groupOrSimplify(false, false)
+			b = append(b, e)
 			if err != nil {
 				return b, err
 			}
