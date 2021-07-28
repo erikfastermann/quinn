@@ -18,3 +18,15 @@ func eqAtom(a Atom, v value.Value) (value.Value, error) {
 func stringerAtom(a Atom) (value.Value, error) {
 	return String(string(a)), nil
 }
+
+func matcherAtom(a Atom, v value.Value) (value.Value, error) {
+	return List{[]value.Value{
+		trueValue,
+		List{[]value.Value{
+			List{[]value.Value{
+				a,
+				v,
+			}},
+		}},
+	}}, nil
+}

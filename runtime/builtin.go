@@ -17,6 +17,7 @@ var builtinOther = []struct {
 	{"tagReturner", tagReturner},
 	{"tagEq", tagEq},
 	{"tagStringer", tagStringer},
+	{"tagMatcher", tagMatcher},
 }
 
 var (
@@ -120,8 +121,17 @@ var builtinBlocks = []struct {
 		}
 		return NewBool(!b.AsBool()), nil
 	}},
+	{">", func(x, y number.Number) (value.Value, error) {
+		return NewBool(x.Cmp(y) > 0), nil
+	}},
 	{">=", func(x, y number.Number) (value.Value, error) {
 		return NewBool(x.Cmp(y) >= 0), nil
+	}},
+	{"<", func(x, y number.Number) (value.Value, error) {
+		return NewBool(x.Cmp(y) < 0), nil
+	}},
+	{"<=", func(x, y number.Number) (value.Value, error) {
+		return NewBool(x.Cmp(y) <= 0), nil
 	}},
 	{"not", func(b Bool) (value.Value, error) {
 		return NewBool(!b.AsBool()), nil

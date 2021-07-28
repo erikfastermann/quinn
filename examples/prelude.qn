@@ -137,3 +137,25 @@
 		}
 	}
 }
+
+# TODO: check (len matcherAndBlocks) %% 2 == 0
+'match = def ['x 'matcherAndBlocks] {
+	'mb = matcherAndBlocks
+	'i = mut 0
+	loop {
+		'ii = load i
+		if (ii >= (len mb)) {
+			return ()
+		}
+		i <- (ii + 2)
+
+		'matcher = (mb @ ii)
+		'block = (mb @ (ii + 1))
+		'res = (attr matcher tagMatcher) matcher x
+		'ok = (res @ 0)
+		'matches = (res @ 1)
+		if ok {
+			return ((argumentify { matches } block { __return }) ())
+		}
+	}
+}

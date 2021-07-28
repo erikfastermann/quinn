@@ -1,0 +1,27 @@
+match [42 "bar"] [
+	['a "foo"] { println a }
+	['a "bar"] { println a a }
+	['a "baz"] { println a a a }
+]
+
+'tagBetween = newTag ()
+'between = def ['a 'x 'y] {
+	'matcher = def ['_ 'v] {
+		default {
+			[((v >= x) && { v <= y }) [[a v]]]
+		} {
+			[false []]
+		}
+	}
+	(opaque
+		()
+		tagBetween
+		[tagMatcher matcher]
+	)
+}
+
+match 42 [
+	(between 'a 1 3) { println a }
+	(between 'a 41 43) { println a a }
+	(between 'a 81 83) { println a a a }
+]

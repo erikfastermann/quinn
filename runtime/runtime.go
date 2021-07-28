@@ -8,12 +8,15 @@ import (
 	"github.com/erikfastermann/quinn/value"
 )
 
+// TODO: better naming matcher
+
 const internal = "internal error"
 
 var (
 	tagReturner = value.NewTag()
-	tagStringer = value.NewTag()
 	tagEq       = value.NewTag()
+	tagStringer = value.NewTag()
+	tagMatcher  = value.NewTag()
 )
 
 func newTagMatcher(tagFuncPairs ...interface{}) func(value.Value, value.Tag) (value.Value, bool) {
@@ -40,21 +43,61 @@ func newTagMatcher(tagFuncPairs ...interface{}) func(value.Value, value.Tag) (va
 	}
 }
 
+func matcherEq(matcher, v value.Value) (value.Value, error) {
+	bV, err := eq(matcher, v)
+	if err != nil {
+		return nil, err
+	}
+	return List{[]value.Value{bV, List{}}}, nil
+}
+
 var tagValues map[value.Tag]func(value.Value, value.Tag) (v value.Value, ok bool)
 
 func init() {
 	// needed to avoid init loop
 	tagValues = map[value.Tag]func(value.Value, value.Tag) (value.Value, bool){
-		tagUnit:      newTagMatcher(tagEq, eqUnit, tagStringer, stringerUnit),
-		tagBool:      newTagMatcher(tagEq, eqBool, tagStringer, stringerBool),
-		number.Tag(): newTagMatcher(tagEq, eqNumber, tagStringer, stringerNumber),
-		tagString:    newTagMatcher(tagEq, eqString, tagStringer, stringerString),
-		tagAtom:      newTagMatcher(tagEq, eqAtom, tagStringer, stringerAtom),
-		tagList:      newTagMatcher(tagEq, eqList, tagStringer, stringerList),
-		tagMut:       newTagMatcher(tagEq, eqMut, tagStringer, stringerMut),
-		tagBlock:     newTagMatcher(tagStringer, stringerBlock),
-		tagTag:       newTagMatcher(tagEq, eqTag, tagStringer, stringerTag),
-		tagOpaque:    opaqueMatcher,
+		tagUnit: newTagMatcher(
+			tagEq, eqUnit,
+			tagStringer, stringerUnit,
+			tagMatcher, matcherEq,
+		),
+		tagBool: newTagMatcher(
+			tagEq, eqBool,
+			tagStringer, stringerBool,
+			tagMatcher, matcherEq,
+		),
+		number.Tag(): newTagMatcher(
+			tagEq, eqNumber,
+			tagStringer, stringerNumber,
+			tagMatcher, matcherEq,
+		),
+		tagString: newTagMatcher(
+			tagEq, eqString,
+			tagStringer, stringerString,
+			tagMatcher, matcherEq,
+		),
+		tagAtom: newTagMatcher(
+			tagEq, eqAtom,
+			tagStringer, stringerAtom,
+			tagMatcher, matcherAtom,
+		),
+		tagList: newTagMatcher(
+			tagEq, eqList,
+			tagStringer, stringerList,
+			tagMatcher, matcherList,
+		),
+		tagMut: newTagMatcher(
+			tagEq, eqMut,
+			tagStringer, stringerMut,
+			tagMatcher, matcherEq,
+		),
+		tagBlock: newTagMatcher(tagStringer, stringerBlock),
+		tagTag: newTagMatcher(
+			tagEq, eqTag,
+			tagStringer, stringerTag,
+			tagMatcher, matcherEq,
+		),
+		tagOpaque: opaqueMatcher,
 	}
 }
 
@@ -120,6 +163,7 @@ func getAttributeBlock(v value.Value, tag value.Tag) (Block, error) {
 	return b, nil
 }
 
+// TODO: should eq return Bool?
 func eq(x, y value.Value) (value.Value, error) {
 	b, err := getAttributeBlock(x, tagEq)
 	if err != nil {
