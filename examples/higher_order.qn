@@ -1,1 +1,8 @@
-println (((0..10) | [filter (['x] -> {(x %% 2) == 0})]) | [toList])
+'range = (0..10)
+'f = [filter (
+	['x] -> {
+		(x %% 2) == 0
+	}
+)]
+'a = ((range | f) | [toList])
+println a

@@ -1,40 +1,35 @@
 'tagReturn = newTag ()
-'returner = argumentify { [['ret (__args@0)]] } { unopaque ret tagReturn } { __return }
-# TODO: check __args len
-'defBefore = { [['args (__args@0)] ['block (__args@1)]] }
-'defBlock = {
-	(argumentify
-		{
-			'i = mut 0
-			'out = mut []
-			loop {
-				'ii = load i
-				if (ii >= (len __args)) {
-					(opaque
-						(load out)
-						tagReturn
-						[tagReturner returner]
-					)
-				} {
-					out <- append (load out) [(args@ii) (__args@ii)]
-					i <- (ii + 1)
-				}
+'returner = argumentify 'args { unopaque (args@0) tagReturn }
+'def = argumentify 'argsAndBlock {
+	# TODO: check argsAndBlock len
+	'args = (argsAndBlock@0)
+	'block = (argsAndBlock@1)
+
+	argumentify 'callArgs {
+		'i = mut 0
+		'out = mut []
+		'ret = loop {
+			'ii = load i
+			if (ii >= (len callArgs)) {
+				(opaque
+					(insertAndCall (load out) block)
+					tagReturn
+					[tagReturner returner]
+				)
+			} {
+				out <- append (load out) [(args@ii) (callArgs@ii)]
+				i <- (ii + 1)
 			}
 		}
-		block
-		{ __return }
-	)
+		default { (attr ret tagReturner) ret } { ret }
+	}
 }
-'def = (argumentify
-	defBefore
-	defBlock
-	{ default { (attr __return tagReturner) __return } { __return } }
-)
 (atom "->") = def
 
 'returnStringer = def ['_] { "return" }
 'returnReturner = def ['ret] { unopaque ret tagReturn }
-'return = def ['x] {
+'return = argumentify 'args {
+	'x = (args @ 0)
 	(opaque
 		x
 		tagReturn
@@ -155,7 +150,7 @@
 		'ok = (res @ 0)
 		'matches = (res @ 1)
 		if ok {
-			return ((argumentify { matches } block { __return }) ())
+			return (insertAndCall matches block)
 		}
 	}
 }

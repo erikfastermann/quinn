@@ -21,8 +21,9 @@ var builtinOther = []struct {
 }
 
 var (
-	errNonBasicArgBlock  = errors.New("can't create argumented block from non basic block")
+	errNonBasicBlock     = errors.New("can't use non basic block")
 	errInvalidAttributes = errors.New("attributes must be lists of unique tag and value pairs")
+	errUnopaqueBadTag    = errors.New("can't unopaque: tag doesn't match")
 )
 
 var builtinBlocks = []struct {
@@ -77,7 +78,7 @@ var builtinBlocks = []struct {
 	}},
 	{"unopaque", func(o Opaque, tag value.Tag) (value.Value, error) {
 		if o.tag != tag {
-			return nil, errors.New("can't unopaque: tag doesn't match")
+			return nil, errUnopaqueBadTag
 		}
 		return o.v, nil
 	}},
@@ -154,20 +155,46 @@ var builtinBlocks = []struct {
 	{"%%", func(x, y number.Number) (value.Value, error) {
 		return x.Mod(y)
 	}},
-	{"argumentify", func(beforeB, bB, afterB Block) (value.Value, error) {
-		before, ok := beforeB.(basicBlock)
+	{"argumentify", func(ref Atom, b Block) (value.Value, error) {
+		bb, ok := b.(basicBlock)
 		if !ok {
-			return nil, errNonBasicArgBlock
+			return nil, errNonBasicBlock
 		}
-		b, ok := bB.(basicBlock)
+		return argBlock{ref, bb}, nil
+	}},
+	{"insertAndCall", func(kv List, b Block) (value.Value, error) {
+		bb, ok := b.(basicBlock)
 		if !ok {
-			return nil, errNonBasicArgBlock
+			return nil, errNonBasicBlock
 		}
-		after, ok := afterB.(basicBlock)
-		if !ok {
-			return nil, errNonBasicArgBlock
+
+		const errMsg = "expected a list of unique atom and value pairs" +
+			", got %s instead"
+		env, ok := bb.env, false
+		for _, pairV := range kv.data {
+			pair, ok := pairV.(List)
+			if !ok {
+				return nil, fmt.Errorf(errMsg, valueString(kv))
+			}
+			if len(pair.data) != 2 {
+				return nil, fmt.Errorf(errMsg, valueString(kv))
+			}
+			atomV, v := pair.data[0], pair.data[1]
+			atom, ok := atomV.(Atom)
+			if !ok {
+				return nil, fmt.Errorf(errMsg, valueString(kv))
+			}
+			env, ok = env.insert(atom, v)
+			if !ok {
+				return nil, fmt.Errorf(
+					"can't use %s as an argument, already exists in the environment",
+					valueString(atom),
+				)
+			}
 		}
-		return argBlock{before: before, b: b, after: after}, nil
+
+		_, v, err := runCode(env, bb.code)
+		return v, err
 	}},
 	{"if", func(cond value.Value, tBlock Block, blocks ...Block) (value.Value, error) {
 		var fBlock Block
