@@ -62,11 +62,19 @@
 	}
 }
 
-(atom "|") = def ['a 'b] {
-	'args = append_list [a] (slice b 1 (len b))
-	call (b @ 0) args
+# TODO: use varargs
+'pipe = def ['x 'line] {
+	'v = mut x
+	'i = mut 0
+	loop {
+		'ii = (load i)
+		if (ii >= (len line)) {
+			return (load v)
+		}
+		i <- (ii + 1)
+		v <- (line @ ii) (load v)
+	}
 }
-
 
 'tagStop = newTag ()
 'stopEq = (['_ 'v] -> { default { opaqueTagEq v tagStop } { false } })
@@ -88,24 +96,26 @@
 	}
 })
 
-'filter = (['iter 'cond] -> {
-	{
-		'next = iter ()
+'filter = (['cond] -> {
+	['iter] -> {
 		{
-			loop {
-				'v = next ()
-				if (v == stop) {
-					return stop
-				}
-				if (cond v) {
-					return v
+			'next = iter ()
+			{
+				loop {
+					'v = next ()
+					if (v == stop) {
+						return stop
+					}
+					if (cond v) {
+						return v
+					}
 				}
 			}
 		}
 	}
 })
 
-'toList = (['iter] -> {
+'toList = def ['iter] {
 	'out = mut []
 	'next = iter ()
 	loop {
@@ -115,7 +125,7 @@
 		}
 		out <- (append (load out) v)
 	}
-})
+}
 
 # TODO: check start <= end
 (atom "..") = def ['start 'end] {
