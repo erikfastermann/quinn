@@ -54,11 +54,11 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 		)
 	}
 
-	if len(code) == 0 {
+	if len(code.V) == 0 {
 		return env, unit, nil
 	}
 
-	for _, elem := range code[:len(code)-1] {
+	for _, elem := range code.V[:len(code.V)-1] {
 		var (
 			v   value.Value
 			err error
@@ -73,52 +73,37 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 		}
 		return env, v, nil
 	}
-	return evalElement(env, code[len(code)-1])
+	return evalElement(env, code.V[len(code.V)-1])
 }
 
-func evalElement(env *Environment, element parser.Element) (*Environment, value.Value, error) {
+func evalElement(env *Environment, element parser.Element) (_ *Environment, v value.Value, err error) {
+	env, v, err = evalElementNoPosition(env, element)
+	if err != nil {
+		if _, ok := err.(PositionedError); ok {
+			return nil, nil, err
+		}
+		line, col := element.Position()
+		return nil, nil, PositionedError{line, col, err}
+	}
+	return env, v, err
+}
+
+func evalElementNoPosition(env *Environment, element parser.Element) (*Environment, value.Value, error) {
 	switch v := element.(type) {
 	case parser.Ref:
-		val, ok := env.get(Atom(v))
+		val, ok := env.get(Atom(v.V))
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown variable %s", v)
+			return nil, nil, fmt.Errorf("unknown variable %s", v.V)
 		}
 		return env, val, nil
 	case parser.Atom:
-		return env, Atom(string(v)), nil
+		return env, Atom(v.V), nil
 	case parser.String:
-		return env, String(v), nil
+		return env, String(v.V), nil
 	case parser.Number:
-		return env, number.Number(v), nil
+		return env, number.Number(v.V), nil
 	case parser.Unit:
 		return env, unit, nil
-	case parser.Operator:
-		var (
-			lhsV, rhsV value.Value
-			err        error
-		)
-		env, lhsV, err = evalElement(env, v.Lhs)
-		if err != nil {
-			return nil, nil, err
-		}
-		env, rhsV, err = evalElement(env, v.Rhs)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		symbolV, ok := env.get(Atom(v.Symbol))
-		if !ok {
-			return nil, nil, fmt.Errorf("unknown operator %s", v.Symbol)
-		}
-		block, ok := symbolV.(Block)
-		if !ok {
-			return nil, nil, fmt.Errorf(
-				"operator %s is not a block, but a %s value instead",
-				v.Symbol,
-				valueString(symbolV),
-			)
-		}
-		return block.runWithEnv(env, lhsV, rhsV)
 	case parser.Call:
 		args := make([]value.Value, len(v.Args))
 		for i, e := range v.Args {
@@ -150,8 +135,8 @@ func evalElement(env *Environment, element parser.Element) (*Environment, value.
 		}
 		return b.runWithEnv(env, args...)
 	case parser.List:
-		l := make([]value.Value, len(v))
-		for i, e := range v {
+		l := make([]value.Value, len(v.V))
+		for i, e := range v.V {
 			var (
 				v   value.Value
 				err error

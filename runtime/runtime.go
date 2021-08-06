@@ -12,6 +12,20 @@ import (
 
 const internal = "internal error"
 
+// TODO: combine with parser type in central error package
+type PositionedError struct {
+	Line, Column int
+	err          error
+}
+
+func (e PositionedError) Error() string {
+	return fmt.Sprintf("line %d column %d: %v", e.Line, e.Column, e.err)
+}
+
+func (e PositionedError) Unwrap() error {
+	return e.err
+}
+
 var (
 	tagReturner = value.NewTag()
 	tagEq       = value.NewTag()

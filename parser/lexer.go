@@ -10,42 +10,60 @@ import (
 	"github.com/erikfastermann/quinn/number"
 )
 
-type scanner struct {
-	r              io.RuneScanner
-	line           int
-	lastWasNewline bool
-}
-
-func (s *scanner) ReadRune() (rune, int, error) {
-	ch, size, err := s.r.ReadRune()
-	if ch == '\n' {
-		s.line++
-		s.lastWasNewline = true
-	} else {
-		s.lastWasNewline = false
-	}
-	return ch, size, err
-}
-
-func (s *scanner) UnreadRune() error {
-	if err := s.r.UnreadRune(); err != nil {
-		return err
-	}
-	if s.lastWasNewline {
-		s.line--
-		s.lastWasNewline = false
-	}
-	return nil
-}
-
 type Lexer struct {
-	r            *scanner // assumed to always return io.EOF after first io.EOF
+	r              io.RuneScanner // assumed to always return EOF after first EOF
+	line, column   int
+	lastWasNewline bool
+
 	lastToken    Token
 	useLastToken bool
 }
 
 func NewLexer(r io.RuneScanner) *Lexer {
-	return &Lexer{r: &scanner{r: r, line: 1}}
+	return &Lexer{r: r, line: 1, column: 1}
+}
+
+func (l *Lexer) readRune() (ch rune, line, column int, err error) {
+	ch, _, err = l.r.ReadRune()
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	if ch == '\n' {
+		if l.lastWasNewline {
+			line = l.line
+			l.line++
+			l.column = 1
+			return ch, line, l.column, nil
+		} else {
+			line = l.line
+			l.line++
+			l.lastWasNewline = true
+			return ch, line, l.column, nil
+		}
+	} else {
+		if l.lastWasNewline {
+			l.column = 2
+			l.lastWasNewline = false
+			return ch, l.line, 1, nil
+		} else {
+			column = l.column
+			l.column++
+			return ch, l.line, column, nil
+		}
+	}
+}
+
+func (l *Lexer) unreadRune() {
+	if err := l.r.UnreadRune(); err != nil {
+		panic(internal + ": " + err.Error())
+	}
+	if l.lastWasNewline {
+		l.line--
+		l.lastWasNewline = false
+	} else {
+		l.column--
+	}
 }
 
 func (l *Lexer) Unread() {
@@ -72,17 +90,17 @@ func (l *Lexer) Next() (Token, error) {
 var errBareTick = errors.New("bare '")
 
 func (l *Lexer) next() (Token, error) {
-	ch, _, err := l.r.ReadRune()
+	ch, line, column, err := l.readRune()
 	if err != nil {
 		return nil, err
 	}
 
 	if unicode.IsSpace(ch) {
 		if ch == '\n' {
-			return EndOfLine{}, nil
+			return EndOfLine{line, column}, nil
 		}
 		for {
-			ch, _, err = l.r.ReadRune()
+			ch, line, column, err = l.readRune()
 			if err != nil {
 				return nil, err
 			}
@@ -90,7 +108,7 @@ func (l *Lexer) next() (Token, error) {
 				break
 			}
 			if ch == '\n' {
-				return EndOfLine{}, nil
+				return EndOfLine{line, column}, nil
 			}
 		}
 	}
@@ -101,7 +119,7 @@ func (l *Lexer) next() (Token, error) {
 		case '"':
 			var str strings.Builder
 			for {
-				ch, _, err := l.r.ReadRune()
+				ch, _, _, err := l.readRune()
 				if err != nil {
 					if err == io.EOF {
 						return nil, errors.New("string not closed with \"")
@@ -115,9 +133,9 @@ func (l *Lexer) next() (Token, error) {
 					str.WriteRune(ch)
 				}
 			}
-			return String(str.String()), nil
+			return String{line, column, str.String()}, nil
 		case '\'':
-			ch, _, err := l.r.ReadRune()
+			ch, _, _, err := l.readRune()
 			if err != nil {
 				if err == io.EOF {
 					return nil, errBareTick
@@ -127,53 +145,53 @@ func (l *Lexer) next() (Token, error) {
 			if !isCharStart(ch) {
 				return nil, errBareTick
 			}
-			must(l.r.UnreadRune())
+			l.unreadRune()
 
 			atom, err := l.takeStringWhile(isChar)
 			if err != nil {
 				return nil, err
 			}
-			return Atom(atom), nil
+			return Atom{line, column, atom}, nil
 		case '(':
-			return OpenBracket{}, nil
+			return OpenBracket{line, column}, nil
 		case ')':
-			return ClosedBracket{}, nil
+			return ClosedBracket{line, column}, nil
 		case '[':
-			return OpenSquare{}, nil
+			return OpenSquare{line, column}, nil
 		case ']':
-			return ClosedSquare{}, nil
+			return ClosedSquare{line, column}, nil
 		case '{':
-			return OpenCurly{}, nil
+			return OpenCurly{line, column}, nil
 		case '}':
-			return ClosedCurly{}, nil
+			return ClosedCurly{line, column}, nil
 		case '#':
 			for {
-				ch, _, err := l.r.ReadRune()
+				ch, line, column, err := l.readRune()
 				if err != nil {
 					if err == io.EOF {
-						return EndOfLine{}, nil
+						return EndOfLine{line, column}, nil
 					}
 					return nil, err
 				}
 				if ch == '\n' {
-					return EndOfLine{}, nil
+					return EndOfLine{line, column}, nil
 				}
 			}
 		default:
 			panic(internal)
 		}
 	case isCharStart(ch):
-		must(l.r.UnreadRune())
+		l.unreadRune()
 		ref, err := l.takeStringWhile(isChar)
 		if err != nil {
 			return nil, err
 		}
-		return Ref(ref), nil
+		return Ref{line, column, ref}, nil
 	case isNumberStart(ch):
 		// TODO: support hex, binary, octal
 		// TODO: support .
 
-		must(l.r.UnreadRune())
+		l.unreadRune()
 		num, err := l.takeStringWhile(isNumber)
 		if err != nil {
 			return nil, err
@@ -186,14 +204,14 @@ func (l *Lexer) next() (Token, error) {
 		if err != nil {
 			panic(internal + ": " + err.Error())
 		}
-		return Number(n), nil
+		return Number{line, column, n}, nil
 	case isSymbol(ch):
-		must(l.r.UnreadRune())
+		l.unreadRune()
 		symbol, err := l.takeStringWhile(isSymbol)
 		if err != nil {
 			return nil, err
 		}
-		return Symbol(symbol), nil
+		return Symbol{line, column, symbol}, nil
 	default:
 		return nil, fmt.Errorf("unknown character %q", ch)
 	}
@@ -202,7 +220,7 @@ func (l *Lexer) next() (Token, error) {
 func (l *Lexer) takeStringWhile(predicate func(rune) bool) (string, error) {
 	var b strings.Builder
 	for {
-		ch, _, err := l.r.ReadRune()
+		ch, _, _, err := l.readRune()
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -210,7 +228,7 @@ func (l *Lexer) takeStringWhile(predicate func(rune) bool) (string, error) {
 			return "", err
 		}
 		if !predicate(ch) {
-			must(l.r.UnreadRune())
+			l.unreadRune()
 			break
 		}
 		b.WriteRune(ch)

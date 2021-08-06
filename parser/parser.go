@@ -2,87 +2,134 @@ package parser
 
 import (
 	"errors"
-	"fmt"
 	"io"
 )
 
 const internal = "internal error"
 
-func must(err error) {
-	if err != nil {
-		panic(internal + ": " + err.Error())
-	}
-}
+type startingPosition struct{}
+
+func (startingPosition) Position() (int, int) { return 1, 1 }
 
 func Parse(lexer *Lexer) (Block, error) {
 	p := &parser{lexer}
-	b, err := p.block(false)
-	if err == io.EOF {
-		return b, nil
+	b, err := p.block(startingPosition{}, false)
+	if err != nil {
+		return Block{}, err
 	}
-	return b, fmt.Errorf("read until line %d: %w", p.l.r.line, err)
+	return b.(Block), nil
 }
 
 type parser struct {
 	l *Lexer
 }
 
-func (p *parser) groupOrSimplify(explicitBracket bool, errorOnSymbol bool) (Element, error) {
-	g, err := p.group(explicitBracket, errorOnSymbol)
-	if err != nil {
-		return g, err
-	}
-	return simplifyGroup(g), nil
-}
-
-func simplifyGroup(g group) Element {
-	switch len(g) {
-	case 0:
-		return Unit{}
-	case 1:
-		return g[0]
-	default:
-		return Call{First: g[0], Args: g[1:]}
-	}
-}
-
-func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (group, error) {
-	var g group
+func (p *parser) block(pos Positioned, explicitCurly bool) (Element, error) {
+	l, c := pos.Position()
+	b := Block{Line: l, Column: c}
 
 	for {
 		t, err := p.l.Next()
 		if err != nil {
-			if err == io.EOF && explicitBracket {
-				return g, errors.New("missing ')'")
+			if err == io.EOF {
+				if explicitCurly {
+					return nil, errors.New("missing '}'")
+				}
+				return b, nil
 			}
-			return g, err
+			return nil, err
+		}
+
+		switch t.(type) {
+		case EndOfLine:
+		case ClosedCurly:
+			if !explicitCurly {
+				return nil, errorf(t, "unexpected '}'")
+			}
+			return b, nil
+		case ClosedBracket:
+			return nil, errorf(t, "unexpected ')'")
+		case ClosedSquare:
+			return nil, errorf(t, "unexpected ']'")
+		default:
+			p.l.Unread()
+			e, err := p.canonicalizeGroup(t, false, false)
+			if err != nil {
+				return nil, err
+			}
+			b.V = append(b.V, e)
+		}
+	}
+}
+
+func (p *parser) canonicalizeGroup(pos Positioned, explicitBracket bool, errorOnSymbol bool) (Element, error) {
+	e, err := p.group(pos, explicitBracket, errorOnSymbol)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalizeGroup(pos, e), nil
+}
+
+func canonicalizeGroup(p Positioned, e []Element) Element {
+	line, column := p.Position()
+	switch len(e) {
+	case 0:
+		return Unit{line, column}
+	case 1:
+		return e[0]
+	default:
+		return Call{Line: line, Column: column, First: e[0], Args: e[1:]}
+	}
+}
+
+func (p *parser) group(pos Positioned, explicitBracket bool, errorOnSymbol bool) ([]Element, error) {
+	line, col := pos.Position()
+	var g []Element
+
+	for {
+		t, err := p.l.Next()
+		if err != nil {
+			if err == io.EOF {
+				if explicitBracket {
+					return nil, errors.New("missing ')'")
+				}
+				return g, nil
+			}
+			return nil, err
 		}
 
 		switch v := t.(type) {
 		case Symbol:
+			// TODO: check if operator has empty left/right side?
+
 			if errorOnSymbol {
-				return g, fmt.Errorf("more than 1 symbol (%s) in group, use extra brackets", v)
+				return nil, errorf(t, "more than 1 symbol (%s) in group, use extra brackets", v.V)
 			}
 
-			rhs, err := p.groupOrSimplify(explicitBracket, true)
-			op := Operator{simplifyGroup(g), v, rhs}
-			g = group{op}
+			lhs := canonicalizeGroup(pos, g)
+			// TODO: better position for rhs
+			rhs, err := p.canonicalizeGroup(t, explicitBracket, true)
 			if err != nil {
-				return g, err
+				return nil, err
 			}
-			// TODO: check if operator has empty left/right hand side?
-			return g, nil
+			call := Call{
+				Line:   line,
+				Column: col,
+				First:  Ref(v),
+				Args:   []Element{lhs, rhs},
+			}
+			return []Element{call}, nil
 		case ClosedBracket:
 			if !explicitBracket {
-				return g, errors.New("unexpected ')'")
+				return nil, errorf(t, "unexpected ')'")
 			}
 			return g, nil
 		case OpenBracket:
-			e, err := p.groupOrSimplify(true, false)
-			g = append(g, e)
+			e, err := p.canonicalizeGroup(t, true, false)
 			if err != nil {
-				return g, err
+				return nil, err
 			}
+			g = append(g, e)
 		case EndOfLine:
 			if !explicitBracket {
 				return g, nil
@@ -90,109 +137,76 @@ func (p *parser) group(explicitBracket bool, errorOnSymbol bool) (group, error) 
 		case Atom, String, Number, Ref:
 			g = append(g, v.(Element))
 		case OpenCurly:
-			b, err := p.block(true)
+			b, err := p.block(t, true)
+			if err != nil {
+				return nil, err
+			}
 			g = append(g, b)
-			if err != nil {
-				return g, err
-			}
 		case OpenSquare:
-			l, err := p.list()
-			g = append(g, l)
+			l, err := p.list(t)
 			if err != nil {
-				return g, err
+				return nil, err
 			}
+			g = append(g, l)
 		case ClosedCurly:
 			if explicitBracket {
-				return g, errors.New("unexpected '}'")
+				return nil, errorf(t, "unexpected '}'")
 			}
 			p.l.Unread()
 			return g, nil
 		case ClosedSquare:
-			return g, errors.New("unexpected ']'")
+			return nil, errorf(t, "unexpected ']'")
 		default:
 			panic(internal)
 		}
 	}
 }
 
-func (p *parser) list() (List, error) {
-	var l List
+func (p *parser) list(pos Positioned) (Element, error) {
+	line, col := pos.Position()
+	l := List{Line: line, Column: col}
 
 	for {
 		t, err := p.l.Next()
 		if err != nil {
 			if err == io.EOF {
-				return l, errors.New("missing ']'")
+				return nil, errors.New("missing ']'")
 			}
-			return l, err
+			return nil, err
 		}
 
 		switch v := t.(type) {
 		case Symbol:
-			return l, errors.New("bare operator not allowed in list, enclose in brackets")
+			return nil, errorf(t, "bare operator not allowed in list, enclose in brackets")
 		case ClosedBracket:
-			return l, errors.New("unexpected ']'")
+			return nil, errorf(t, "unexpected ']'")
 		case OpenBracket:
-			e, err := p.groupOrSimplify(true, false)
-			l = append(l, e)
+			e, err := p.canonicalizeGroup(t, true, false)
 			if err != nil {
-				return l, err
+				return nil, err
 			}
+			l.V = append(l.V, e)
 		case EndOfLine:
 		case Atom, Ref, String, Number:
-			l = append(l, v.(Element))
+			l.V = append(l.V, v.(Element))
 		case OpenCurly:
-			b, err := p.block(true)
-			l = append(l, b)
+			b, err := p.block(t, true)
 			if err != nil {
-				return l, err
+				return nil, err
 			}
+			l.V = append(l.V, b)
 		case OpenSquare:
-			ll, err := p.list()
-			l = append(l, ll)
+			ll, err := p.list(t)
 			if err != nil {
-				return l, err
+				return nil, err
 			}
+			l.V = append(l.V, ll)
 		case ClosedCurly:
-			return l, errors.New("unexpected '}'")
+			return l, errorf(t, "unexpected '}'")
 		case ClosedSquare:
 			return l, nil
 		default:
 			panic(internal)
-		}
-	}
-}
-
-func (p *parser) block(explicitCurly bool) (Block, error) {
-	var b Block
-
-	for {
-		t, err := p.l.Next()
-		if err != nil {
-			if err == io.EOF && explicitCurly {
-				return b, errors.New("missing '}'")
-			}
-			return b, err
-		}
-
-		switch t.(type) {
-		case EndOfLine:
-		case ClosedCurly:
-			if !explicitCurly {
-				return b, errors.New("unexpected '}'")
-			}
-			return b, nil
-		case ClosedBracket:
-			return b, errors.New("unexpected ')'")
-		case ClosedSquare:
-			return b, errors.New("unexpected ']'")
-		default:
-			p.l.Unread()
-			e, err := p.groupOrSimplify(false, false)
-			b = append(b, e)
-			if err != nil {
-				return b, err
-			}
 		}
 	}
 }
