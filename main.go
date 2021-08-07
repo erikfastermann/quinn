@@ -34,7 +34,7 @@ func run() error {
 			return err
 		}
 	} else {
-		block, err := parser.Parse(parser.NewLexer(bufio.NewReader(prelude)))
+		block, err := parser.Parse(parser.NewLexer(prelude.Name(), bufio.NewReader(prelude)))
 		if err != nil {
 			return err
 		}
@@ -44,7 +44,7 @@ func run() error {
 		}
 	}
 
-	block, err := parser.Parse(parser.NewLexer(bufio.NewReader(f)))
+	block, err := parser.Parse(parser.NewLexer(f.Name(), bufio.NewReader(f)))
 	if err != nil {
 		return err
 	}

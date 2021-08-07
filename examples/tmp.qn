@@ -1,0 +1,2 @@
+'a = def ['b 'c] {}
+println (a 1 2 3)

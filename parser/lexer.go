@@ -11,6 +11,7 @@ import (
 )
 
 type Lexer struct {
+	path           string
 	r              io.RuneScanner // assumed to always return EOF after first EOF
 	line, column   int
 	lastWasNewline bool
@@ -19,8 +20,8 @@ type Lexer struct {
 	useLastToken bool
 }
 
-func NewLexer(r io.RuneScanner) *Lexer {
-	return &Lexer{r: r, line: 1, column: 1}
+func NewLexer(path string, r io.RuneScanner) *Lexer {
+	return &Lexer{path: path, r: r, line: 1, column: 1}
 }
 
 func (l *Lexer) readRune() (ch rune, line, column int, err error) {
@@ -97,7 +98,7 @@ func (l *Lexer) next() (Token, error) {
 
 	if unicode.IsSpace(ch) {
 		if ch == '\n' {
-			return EndOfLine{line, column}, nil
+			return EndOfLine{l.path, line, column}, nil
 		}
 		for {
 			ch, line, column, err = l.readRune()
@@ -108,7 +109,7 @@ func (l *Lexer) next() (Token, error) {
 				break
 			}
 			if ch == '\n' {
-				return EndOfLine{line, column}, nil
+				return EndOfLine{l.path, line, column}, nil
 			}
 		}
 	}
@@ -133,7 +134,7 @@ func (l *Lexer) next() (Token, error) {
 					str.WriteRune(ch)
 				}
 			}
-			return String{line, column, str.String()}, nil
+			return String{l.path, line, column, str.String()}, nil
 		case '\'':
 			ch, _, _, err := l.readRune()
 			if err != nil {
@@ -151,30 +152,30 @@ func (l *Lexer) next() (Token, error) {
 			if err != nil {
 				return nil, err
 			}
-			return Atom{line, column, atom}, nil
+			return Atom{l.path, line, column, atom}, nil
 		case '(':
-			return OpenBracket{line, column}, nil
+			return OpenBracket{l.path, line, column}, nil
 		case ')':
-			return ClosedBracket{line, column}, nil
+			return ClosedBracket{l.path, line, column}, nil
 		case '[':
-			return OpenSquare{line, column}, nil
+			return OpenSquare{l.path, line, column}, nil
 		case ']':
-			return ClosedSquare{line, column}, nil
+			return ClosedSquare{l.path, line, column}, nil
 		case '{':
-			return OpenCurly{line, column}, nil
+			return OpenCurly{l.path, line, column}, nil
 		case '}':
-			return ClosedCurly{line, column}, nil
+			return ClosedCurly{l.path, line, column}, nil
 		case '#':
 			for {
 				ch, line, column, err := l.readRune()
 				if err != nil {
 					if err == io.EOF {
-						return EndOfLine{line, column}, nil
+						return EndOfLine{l.path, line, column}, nil
 					}
 					return nil, err
 				}
 				if ch == '\n' {
-					return EndOfLine{line, column}, nil
+					return EndOfLine{l.path, line, column}, nil
 				}
 			}
 		default:
@@ -186,7 +187,7 @@ func (l *Lexer) next() (Token, error) {
 		if err != nil {
 			return nil, err
 		}
-		return Ref{line, column, ref}, nil
+		return Ref{l.path, line, column, ref}, nil
 	case isNumberStart(ch):
 		// TODO: support hex, binary, octal
 		// TODO: support .
@@ -204,14 +205,14 @@ func (l *Lexer) next() (Token, error) {
 		if err != nil {
 			panic(internal + ": " + err.Error())
 		}
-		return Number{line, column, n}, nil
+		return Number{l.path, line, column, n}, nil
 	case isSymbol(ch):
 		l.unreadRune()
 		symbol, err := l.takeStringWhile(isSymbol)
 		if err != nil {
 			return nil, err
 		}
-		return Symbol{line, column, symbol}, nil
+		return Symbol{l.path, line, column, symbol}, nil
 	default:
 		return nil, fmt.Errorf("unknown character %q", ch)
 	}

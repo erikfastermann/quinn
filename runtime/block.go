@@ -77,18 +77,18 @@ func runCode(env *Environment, code parser.Block, args ...value.Value) (*Environ
 }
 
 func evalElement(env *Environment, element parser.Element) (_ *Environment, v value.Value, err error) {
-	env, v, err = evalElementNoPosition(env, element)
+	env, v, err = evalElementInner(env, element)
 	if err != nil {
 		if _, ok := err.(PositionedError); ok {
 			return nil, nil, err
 		}
-		line, col := element.Position()
-		return nil, nil, PositionedError{line, col, err}
+		path, line, col := element.Position()
+		return nil, nil, PositionedError{path, line, col, err}
 	}
 	return env, v, err
 }
 
-func evalElementNoPosition(env *Environment, element parser.Element) (*Environment, value.Value, error) {
+func evalElementInner(env *Environment, element parser.Element) (*Environment, value.Value, error) {
 	switch v := element.(type) {
 	case parser.Ref:
 		val, ok := env.get(Atom(v.V))
@@ -105,19 +105,6 @@ func evalElementNoPosition(env *Environment, element parser.Element) (*Environme
 	case parser.Unit:
 		return env, unit, nil
 	case parser.Call:
-		args := make([]value.Value, len(v.Args))
-		for i, e := range v.Args {
-			var (
-				v   value.Value
-				err error
-			)
-			env, v, err = evalElement(env, e)
-			if err != nil {
-				return nil, nil, err
-			}
-			args[i] = v
-		}
-
 		var (
 			val value.Value
 			err error
@@ -133,7 +120,21 @@ func evalElementNoPosition(env *Environment, element parser.Element) (*Environme
 				valueString(val),
 			)
 		}
-		return b.runWithEnv(env, args...)
+
+		args := make([]value.Value, len(v.Args))
+		for i, e := range v.Args {
+			env, val, err = evalElement(env, e)
+			if err != nil {
+				return nil, nil, err
+			}
+			args[i] = val
+		}
+
+		env, val, err = b.runWithEnv(env, args...)
+		if err != nil {
+			return nil, nil, PositionedError{v.Path, v.Line, v.Column, err}
+		}
+		return env, val, nil
 	case parser.List:
 		l := make([]value.Value, len(v.V))
 		for i, e := range v.V {

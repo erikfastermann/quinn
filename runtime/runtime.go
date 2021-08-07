@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/erikfastermann/quinn/number"
 	"github.com/erikfastermann/quinn/parser"
@@ -14,12 +16,30 @@ const internal = "internal error"
 
 // TODO: combine with parser type in central error package
 type PositionedError struct {
+	Path         string
 	Line, Column int
 	err          error
 }
 
 func (e PositionedError) Error() string {
-	return fmt.Sprintf("line %d column %d: %v", e.Line, e.Column, e.err)
+	var b strings.Builder
+	cur := e
+	for {
+		b.WriteString(cur.Path)
+		b.WriteString("|")
+		b.WriteString(strconv.Itoa(cur.Line))
+		b.WriteString(" col ")
+		b.WriteString(strconv.Itoa(cur.Column))
+		if next, ok := cur.err.(PositionedError); ok {
+			b.WriteString("\n")
+			cur = next
+		} else {
+			b.WriteString("| ")
+			b.WriteString(cur.err.Error())
+			break
+		}
+	}
+	return b.String()
 }
 
 func (e PositionedError) Unwrap() error {

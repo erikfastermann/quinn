@@ -7,13 +7,15 @@ import (
 
 const internal = "internal error"
 
-type startingPosition struct{}
+type startingPosition struct {
+	path string
+}
 
-func (startingPosition) Position() (int, int) { return 1, 1 }
+func (sp startingPosition) Position() (string, int, int) { return sp.path, 1, 1 }
 
-func Parse(lexer *Lexer) (Block, error) {
-	p := &parser{lexer}
-	b, err := p.block(startingPosition{}, false)
+func Parse(l *Lexer) (Block, error) {
+	p := &parser{l}
+	b, err := p.block(startingPosition{l.path}, false)
 	if err != nil {
 		return Block{}, err
 	}
@@ -25,8 +27,8 @@ type parser struct {
 }
 
 func (p *parser) block(pos Positioned, explicitCurly bool) (Element, error) {
-	l, c := pos.Position()
-	b := Block{Line: l, Column: c}
+	path, line, col := pos.Position()
+	b := Block{Path: path, Line: line, Column: col}
 
 	for {
 		t, err := p.l.Next()
@@ -71,19 +73,24 @@ func (p *parser) canonicalizeGroup(pos Positioned, explicitBracket bool, errorOn
 }
 
 func canonicalizeGroup(p Positioned, e []Element) Element {
-	line, column := p.Position()
+	path, line, column := p.Position()
 	switch len(e) {
 	case 0:
-		return Unit{line, column}
+		return Unit{path, line, column}
 	case 1:
 		return e[0]
 	default:
-		return Call{Line: line, Column: column, First: e[0], Args: e[1:]}
+		return Call{
+			Path:   path,
+			Line:   line,
+			Column: column,
+			First:  e[0],
+			Args:   e[1:],
+		}
 	}
 }
 
 func (p *parser) group(pos Positioned, explicitBracket bool, errorOnSymbol bool) ([]Element, error) {
-	line, col := pos.Position()
 	var g []Element
 
 	for {
@@ -112,7 +119,9 @@ func (p *parser) group(pos Positioned, explicitBracket bool, errorOnSymbol bool)
 			if err != nil {
 				return nil, err
 			}
+			path, line, col := pos.Position()
 			call := Call{
+				Path:   path,
 				Line:   line,
 				Column: col,
 				First:  Ref(v),
@@ -163,8 +172,8 @@ func (p *parser) group(pos Positioned, explicitBracket bool, errorOnSymbol bool)
 }
 
 func (p *parser) list(pos Positioned) (Element, error) {
-	line, col := pos.Position()
-	l := List{Line: line, Column: col}
+	path, line, col := pos.Position()
+	l := List{Path: path, Line: line, Column: col}
 
 	for {
 		t, err := p.l.Next()
