@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/erikfastermann/quinn/parser"
@@ -11,43 +12,49 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := _main(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func _main() error {
 	if len(os.Args) != 2 {
 		return fmt.Errorf("USAGE: %s FILE\n", os.Args[0])
 	}
-	f, err := os.Open(os.Args[1])
-	if err != nil {
+	env, err := run("prelude.qn", nil)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	_, err = run(os.Args[1], env)
+	return err
+}
+
+func run(path string, env *runtime.Environment) (*runtime.Environment, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close()
 
-	var env *runtime.Environment
-	prelude, err := os.Open("prelude.qn")
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	} else {
-		block, err := parser.Parse(parser.NewLexer(prelude.Name(), bufio.NewReader(prelude)))
-		if err != nil {
-			return err
-		}
-		env, err = runtime.Run(nil, block)
-		if err != nil {
-			return err
-		}
+	lines := make([]string, 0)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		lines = append(lines, s.Text())
+	}
+	if err := s.Err(); err != nil {
+		return nil, err
 	}
 
-	block, err := parser.Parse(parser.NewLexer(f.Name(), bufio.NewReader(f)))
-	if err != nil {
-		return err
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
 	}
-	_, err = runtime.Run(env, block)
-	return err
+	b, err := parser.Parse(parser.NewLexer(f.Name(), bufio.NewReader(f)))
+	if err != nil {
+		return nil, err
+	}
+	if err := runtime.RegisterLineInfo(f.Name(), lines); err != nil {
+		return nil, err
+	}
+	return runtime.Run(env, b)
 }

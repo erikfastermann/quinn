@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/erikfastermann/quinn/number"
 	"github.com/erikfastermann/quinn/parser"
@@ -14,7 +15,6 @@ import (
 
 const internal = "internal error"
 
-// TODO: combine with parser type in central error package
 type PositionedError struct {
 	Path         string
 	Line, Column int
@@ -30,11 +30,19 @@ func (e PositionedError) Error() string {
 		b.WriteString(strconv.Itoa(cur.Line))
 		b.WriteString(" col ")
 		b.WriteString(strconv.Itoa(cur.Column))
+
+		b.WriteString("\n\t")
+		if line, err := getLine(cur.Path, cur.Line); err == nil {
+			b.WriteString(strings.TrimSpace(line))
+		} else {
+			b.WriteString("failed getting line info: ")
+			b.WriteString(err.Error())
+		}
+
+		b.WriteString("\n\n")
 		if next, ok := cur.err.(PositionedError); ok {
-			b.WriteString("\n")
 			cur = next
 		} else {
-			b.WriteString("| ")
 			b.WriteString(cur.err.Error())
 			break
 		}
@@ -44,6 +52,39 @@ func (e PositionedError) Error() string {
 
 func (e PositionedError) Unwrap() error {
 	return e.err
+}
+
+var (
+	lineInfoMutex sync.Mutex
+	lineInfo      = make(map[string][]string)
+)
+
+func RegisterLineInfo(path string, lines []string) error {
+	lineInfoMutex.Lock()
+	defer lineInfoMutex.Unlock()
+	if _, ok := lineInfo[path]; ok {
+		return fmt.Errorf("duplicate path %q", path)
+	}
+	lineInfo[path] = lines
+	return nil
+}
+
+func getLine(path string, line int) (string, error) {
+	line--
+	lineInfoMutex.Lock()
+	defer lineInfoMutex.Unlock()
+	lines, ok := lineInfo[path]
+	if !ok {
+		return "", fmt.Errorf("unknown path %s", path)
+	}
+	if line < 0 || line >= len(lines) {
+		return "", fmt.Errorf(
+			"line index out of bounds (%d with length %d)",
+			line,
+			len(lines),
+		)
+	}
+	return lines[line], nil
 }
 
 var (
@@ -211,5 +252,8 @@ func Run(env *Environment, block parser.Block) (*Environment, error) {
 		env = builtinEnv
 	}
 	env, _, err := runCode(env, block)
-	return env, err
+	if err != nil {
+		return nil, err
+	}
+	return env, nil
 }
